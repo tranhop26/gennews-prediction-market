@@ -5,19 +5,19 @@ from genlayer import *
 
 class Contract(gl.Contract):
     """
-    GenNews - Prediction Market tự động settle bằng AI đọc tin tức thật.
+    GenNews - AI-Powered Prediction Market that auto-settles by reading real news.
     
-    AI là TRÁI TIM của hệ thống:
-    - gl.nondet.web.render() đọc tin tức từ Reuters, Bloomberg, TechCrunch
-    - gl.nondet.exec_prompt() AI phán quyết kết quả
-    - gl.eq_principle.prompt_comparative() validators đạt consensus
+    AI is the HEART of this system:
+    - gl.nondet.web.render() reads news from Reuters, Bloomberg, TechCrunch
+    - gl.nondet.exec_prompt() AI judges the outcome
+    - gl.eq_principle.prompt_comparative() validators reach consensus
     
-    Không có GenLayer = dự án CHẾT. Solidity không thể đọc tin tức on-chain.
+    Without GenLayer = project DIES. Solidity cannot read news on-chain.
     """
 
     # ===================================================================
     # STORAGE FIELDS
-    # TreeMap/DynArray tự động init = empty, KHÔNG gán lại trong __init__!
+    # TreeMap/DynArray auto-init to empty, DO NOT reassign in __init__!
     # ===================================================================
     bets: TreeMap[u256, dict]                              # bet_id -> BetInfo
     user_stakes: TreeMap[Address, TreeMap[u256, dict]]      # user -> bet_id -> StakeInfo
@@ -26,7 +26,7 @@ class Contract(gl.Contract):
     total_volume: u256
 
     def __init__(self):
-        """CHỈ khởi tạo primitive values. KHÔNG động vào TreeMap!"""
+        """Only init primitive values. DO NOT touch TreeMap!"""
         self.next_bet_id = u256(1)
         self.total_bets_created = u256(0)
         self.total_volume = u256(0)
@@ -44,15 +44,15 @@ class Contract(gl.Contract):
         initial_choice: str
     ) -> u256:
         """
-        Tạo bet mới.
+        Create a new prediction market bet.
         
         Args:
-            question: Câu hỏi dự đoán (vd: "Will Bitcoin reach $150k by Dec 2026?")
-            deadline: Unix timestamp (giây)
-            initial_stake: Số token stake ban đầu
-            initial_choice: "YES" hoặc "NO"
+            question: Prediction question (e.g. "Will Bitcoin reach $150k by Dec 2026?")
+            deadline: Unix timestamp (seconds)
+            initial_stake: Initial token stake amount
+            initial_choice: "YES" or "NO"
         Returns:
-            bet_id: ID của bet vừa tạo
+            bet_id: ID of the newly created bet
         """
         # --- Validation ---
         if initial_stake == u256(0):
@@ -64,7 +64,7 @@ class Contract(gl.Contract):
 
         bet_id = self.next_bet_id
 
-        # --- Tạo bet info ---
+        # --- Create bet info ---
         self.bets[bet_id] = {
             "question": question,
             "deadline": int(deadline),
@@ -78,13 +78,13 @@ class Contract(gl.Contract):
             "created_at": 0
         }
 
-        # Stake ban đầu của creator
+        # Creator's initial stake
         if initial_choice == "YES":
             self.bets[bet_id]["total_yes"] = initial_stake
         else:
             self.bets[bet_id]["total_no"] = initial_stake
 
-        # Lưu stake của user
+        # Save user stake
         sender = gl.message.sender_address
         if sender not in self.user_stakes:
             self.user_stakes[sender] = {}
@@ -105,12 +105,12 @@ class Contract(gl.Contract):
     @gl.public.write
     def stake(self, bet_id: u256, choice: str, amount: u256):
         """
-        Stake vào một bet đã tồn tại.
+        Stake on an existing bet.
         
         Args:
-            bet_id: ID của bet
-            choice: "YES" hoặc "NO"
-            amount: Số token stake
+            bet_id: Bet ID
+            choice: "YES" or "NO"
+            amount: Token amount to stake
         """
         # --- Validation ---
         if amount == u256(0):
@@ -137,13 +137,13 @@ class Contract(gl.Contract):
             self.user_stakes[sender] = {}
 
         if bet_id in self.user_stakes[sender]:
-            # User đã stake trước đó — chỉ cho phép cùng side
+            # User already staked - only allow same side
             existing = self.user_stakes[sender][bet_id]
             if existing["choice"] != choice:
                 raise gl.UserError("Cannot bet on both sides")
             existing["amount"] += amount
         else:
-            # Stake mới
+            # New stake
             self.user_stakes[sender][bet_id] = {
                 "choice": choice,
                 "amount": amount,
@@ -155,13 +155,13 @@ class Contract(gl.Contract):
     @gl.public.write
     def settle_bet(self, bet_id: u256):
         """
-        Settle bet bằng AI đọc tin tức — ĐÂY LÀ TRÁI TIM CỦA GENNEWS!
+        Settle bet using AI reading real news - THIS IS THE HEART OF GENNEWS!
         
         Flow:
-        1. AI đọc 5 nguồn tin uy tín (Reuters, Bloomberg, TechCrunch...)
-        2. AI phân tích và phán quyết YES/NO
-        3. Validators so sánh kết quả bằng prompt_comparative
-        4. Kết quả consensus được lưu on-chain
+        1. AI reads 5 credible news sources (Reuters, Bloomberg, TechCrunch...)
+        2. AI analyzes and judges YES/NO
+        3. Validators compare results using prompt_comparative
+        4. Consensus result is stored on-chain
         """
         # --- Validation ---
         if bet_id not in self.bets:
@@ -176,10 +176,10 @@ class Contract(gl.Contract):
         question = bet["question"]
 
         # --- AI SETTLEMENT: The CORE of GenNews ---
-        # Tạo search query từ question
+        # Create search query from question
         search_terms = question.replace("Will ", "").replace("?", "").replace("by ", "")
 
-        # Danh sách nguồn tin uy tín
+        # List of credible news sources
         sources = [
             "https://www.reuters.com/search/news?blob=" + search_terms.replace(" ", "+"),
             "https://www.bloomberg.com/search?query=" + search_terms.replace(" ", "+"),
@@ -190,34 +190,34 @@ class Contract(gl.Contract):
 
         def evaluate():
             """
-            Non-deterministic function: AI đọc tin tức và phán quyết.
+            Non-deterministic function: AI reads news and judges outcome.
             
-            Đây là lý do GenLayer CẦN THIẾT:
-            1. gl.nondet.web.render() — đọc trang tin tức thật
-            2. gl.nondet.exec_prompt() — AI phân tích nội dung
-            Solidity KHÔNG THỂ làm được điều này.
+            This is WHY GenLayer is ESSENTIAL:
+            1. gl.nondet.web.render() - reads real news pages
+            2. gl.nondet.exec_prompt() - AI analyzes content
+            Solidity CANNOT do this.
             """
             articles = []
             failed_count = 0
 
-            # Crawl từng nguồn tin
+            # Crawl each news source
             for url in sources:
                 try:
                     content = gl.nondet.web.render(url, mode="html")
-                    # Lấy 2000 ký tự đầu (tránh token overflow)
+                    # Take first 2000 chars (avoid token overflow)
                     articles.append(url + ":\n" + str(content)[:2000])
                 except Exception:
                     failed_count += 1
                     continue
 
-            # Nếu không đọc được nguồn nào
+            # If no sources accessible
             if len(articles) == 0:
                 return {"outcome": "NO", "confidence": 0, "reason": "Cannot access any news source"}
 
-            # Ghép nội dung tất cả nguồn
+            # Combine all source content
             combined = "\n\n--- SOURCE ---\n\n".join(articles)
 
-            # Prompt cho AI Judge
+            # Prompt for AI Judge
             prompt = """You are a neutral AI judge for a prediction market called GenNews.
 Your job is to determine if an event happened based on credible news sources.
 
@@ -245,9 +245,9 @@ Your job is to determine if an event happened based on credible news sources.
             result = gl.nondet.exec_prompt(prompt, response_format="json")
             return result
 
-        # --- CONSENSUS: prompt_comparative so sánh Ý NGHĨA, không so format ---
-        # Đây là lý do KHÔNG dùng strict_eq: kết quả AI có thể khác format
-        # nhưng cùng ý nghĩa (cùng YES/NO)
+        # --- CONSENSUS: prompt_comparative compares MEANING, not format ---
+        # This is why we do NOT use strict_eq: AI results may differ in format
+        # but agree in meaning (same YES/NO)
         result = gl.eq_principle.prompt_comparative(
             evaluate,
             principle="""Two AI judge results match if and only if:
@@ -256,7 +256,7 @@ Your job is to determine if an event happened based on credible news sources.
 The exact confidence score and wording can differ."""
         )
 
-        # --- Lưu kết quả consensus on-chain ---
+        # --- Store consensus result on-chain ---
         bet["settled"] = True
         bet["outcome"] = result.get("outcome", "NO") if isinstance(result, dict) else "NO"
         bet["reason"] = result.get("reason", "AI analysis complete") if isinstance(result, dict) else str(result)
@@ -265,12 +265,12 @@ The exact confidence score and wording can differ."""
     @gl.public.write
     def claim_winnings(self, bet_id: u256) -> u256:
         """
-        User claim tiền thắng cược.
+        Claim winnings from a settled bet.
         
         Payout = (user_stake / winning_pool) * total_pool
-        VD: stake 100, winning_pool 500, total_pool 1000 → payout = 200
+        Example: stake 100, winning_pool 500, total_pool 1000 -> payout = 200
         
-        Returns: số token claim được (0 nếu thua)
+        Returns: tokens claimed (0 if lost)
         """
         # --- Validation ---
         if bet_id not in self.bets:
@@ -292,13 +292,13 @@ The exact confidence score and wording can differ."""
         if user_stake["claimed"]:
             raise gl.UserError("Already claimed")
 
-        # --- Kiểm tra đoán đúng/sai ---
+        # --- Check if user predicted correctly ---
         if user_stake["choice"] != bet["outcome"]:
-            # Thua cược
+            # Lost the bet
             user_stake["claimed"] = True
             return u256(0)
 
-        # --- Thắng cược: tính payout ---
+        # --- Won: calculate payout ---
         total_pool = bet["total_yes"] + bet["total_no"]
         winning_pool = bet["total_yes"] if bet["outcome"] == "YES" else bet["total_no"]
 
@@ -318,7 +318,7 @@ The exact confidence score and wording can differ."""
 
     @gl.public.view
     def get_bet(self, bet_id: u256) -> dict:
-        """Lấy thông tin chi tiết một bet."""
+        """Get detailed info of a single bet."""
         if bet_id not in self.bets:
             raise gl.UserError("Bet does not exist")
         
@@ -331,7 +331,7 @@ The exact confidence score and wording can differ."""
 
     @gl.public.view
     def get_user_stake(self, user: Address, bet_id: u256) -> dict:
-        """Lấy thông tin stake của user trong một bet."""
+        """Get user stake info for a specific bet."""
         if user not in self.user_stakes:
             return {"choice": "", "amount": 0, "claimed": False}
         if bet_id not in self.user_stakes[user]:
@@ -343,7 +343,7 @@ The exact confidence score and wording can differ."""
 
     @gl.public.view
     def get_all_bets(self) -> list:
-        """Lấy danh sách tất cả bets với thông tin cơ bản."""
+        """Get list of all bets with basic info."""
         result = []
         for i in range(1, int(self.next_bet_id)):
             bid = u256(i)
@@ -358,7 +358,7 @@ The exact confidence score and wording can differ."""
 
     @gl.public.view
     def get_stats(self) -> dict:
-        """Lấy thống kê tổng quan."""
+        """Get overall platform statistics."""
         return {
             "total_bets": int(self.total_bets_created),
             "total_volume": int(self.total_volume),
