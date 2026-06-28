@@ -83,10 +83,10 @@ export default function BetCard({ bet, index = 0 }: BetCardProps) {
         </div>
 
         {/* AI Badge */}
-        {bet.settled && bet.ai_reasoning && (
+        {bet.settled && bet.reason && (
           <div className="mt-3 pt-3 border-t border-white/5">
             <p className="text-xs text-purple-300 line-clamp-2">
-              🤖 {bet.ai_reasoning}
+              🤖 {bet.confidence > 0 && `(${bet.confidence}%) `}{bet.reason}
             </p>
           </div>
         )}

@@ -204,14 +204,19 @@ export default function BetDetailPage() {
             </div>
 
             {/* AI Reasoning (if settled) */}
-            {bet.settled && bet.ai_reasoning && (
+            {bet.settled && bet.reason && (
               <div className="glass-card p-6 animate-fade-in" style={{ animationDelay: "0.2s" }}>
                 <h2 className="text-lg font-semibold text-white mb-3 flex items-center gap-2">
                   <span>🤖</span> AI Analysis
+                  {bet.confidence > 0 && (
+                    <span className="text-sm font-normal text-purple-300">
+                      ({bet.confidence}% confidence)
+                    </span>
+                  )}
                 </h2>
                 <div className="p-4 rounded-xl bg-purple-500/5 border border-purple-500/20">
                   <p className="text-sm text-purple-200 leading-relaxed">
-                    {bet.ai_reasoning}
+                    {bet.reason}
                   </p>
                 </div>
                 <p className="text-xs text-gray-500 mt-2">

@@ -1,64 +1,38 @@
 # v0.2.16
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 from genlayer import *
-import json
 
 
 class Contract(gl.Contract):
     """
-    GenNews - AI-Powered Prediction Market on GenLayer
+    GenNews - Prediction Market tự động settle bằng AI đọc tin tức thật.
     
-    This contract allows users to create prediction bets, stake on YES/NO outcomes,
-    and automatically settle bets using AI that reads real news sources on-chain.
+    AI là TRÁI TIM của hệ thống:
+    - gl.nondet.web.render() đọc tin tức từ Reuters, Bloomberg, TechCrunch
+    - gl.nondet.exec_prompt() AI phán quyết kết quả
+    - gl.eq_principle.prompt_comparative() validators đạt consensus
     
-    WITHOUT GenLayer, this contract CANNOT exist:
-    - Solidity cannot read news from Reuters/Bloomberg
-    - Solidity cannot use AI to judge subjective outcomes
-    - GenLayer's gl.nondet.web.render() + gl.nondet.exec_prompt() make this possible
+    Không có GenLayer = dự án CHẾT. Solidity không thể đọc tin tức on-chain.
     """
 
     # ===================================================================
-    # STORAGE — Only TreeMap/DynArray allowed (Rule #5)
-    # TreeMap/DynArray auto-initialize to empty — DO NOT reassign (Rule #2)
+    # STORAGE FIELDS
+    # TreeMap/DynArray tự động init = empty, KHÔNG gán lại trong __init__!
     # ===================================================================
-    
-    # Core bet storage: bet_id -> JSON string with bet data
-    # JSON format: {"question": str, "creator": str, "deadline": int,
-    #               "resolution_urls": str, "settled": bool, "outcome": str,
-    #               "total_yes": int, "total_no": int, "ai_reasoning": str}
-    bet_data: TreeMap[u256, str]
-    
-    # Stake tracking: "{bet_id}_{address}" -> amount staked
-    stakes_yes: TreeMap[str, u256]
-    stakes_no: TreeMap[str, u256]
-    
-    # Track which addresses have claimed: "{bet_id}_{address}" -> "1"
-    claims: TreeMap[str, str]
-    
-    # All bet IDs for enumeration
-    bet_ids: DynArray[u256]
-    
-    # Global counters (u256 only, no float — Rule #3)
+    bets: TreeMap[u256, dict]                              # bet_id -> BetInfo
+    user_stakes: TreeMap[Address, TreeMap[u256, dict]]      # user -> bet_id -> StakeInfo
     next_bet_id: u256
-    total_bets_count: u256
-    total_settled_count: u256
+    total_bets_created: u256
     total_volume: u256
 
-    # ===================================================================
-    # CONSTRUCTOR
-    # ===================================================================
-    
     def __init__(self):
-        """Initialize contract with counters only.
-        TreeMap/DynArray auto-init to empty — DO NOT reassign! (Rule #2)
-        """
+        """CHỈ khởi tạo primitive values. KHÔNG động vào TreeMap!"""
         self.next_bet_id = u256(1)
-        self.total_bets_count = u256(0)
-        self.total_settled_count = u256(0)
+        self.total_bets_created = u256(0)
         self.total_volume = u256(0)
 
     # ===================================================================
-    # WRITE METHODS — State-changing operations
+    # WRITE METHODS
     # ===================================================================
 
     @gl.public.write
@@ -70,333 +44,323 @@ class Contract(gl.Contract):
         initial_choice: str
     ) -> u256:
         """
-        Create a new prediction bet.
+        Tạo bet mới.
         
         Args:
-            question: The prediction question (e.g., "Will Bitcoin reach $150k?")
-            deadline: Unix timestamp when the bet can be settled
-            initial_stake: Amount to stake initially
-            initial_choice: "YES" or "NO" — creator's initial position
-            
+            question: Câu hỏi dự đoán (vd: "Will Bitcoin reach $150k by Dec 2026?")
+            deadline: Unix timestamp (giây)
+            initial_stake: Số token stake ban đầu
+            initial_choice: "YES" hoặc "NO"
         Returns:
-            bet_id: The unique ID of the created bet
+            bet_id: ID của bet vừa tạo
         """
         # --- Validation ---
-        if len(question) == 0:
-            raise gl.vm.UserError("Question cannot be empty")
         if initial_stake == u256(0):
-            raise gl.vm.UserError("Initial stake must be greater than 0")
-        if initial_choice != "YES" and initial_choice != "NO":
-            raise gl.vm.UserError("Choice must be YES or NO")
-        
-        # --- Create bet ---
+            raise gl.UserError("Initial stake must be > 0")
+        if initial_choice not in ["YES", "NO"]:
+            raise gl.UserError("Initial choice must be YES or NO")
+        if len(question) < 10:
+            raise gl.UserError("Question too short (min 10 chars)")
+
         bet_id = self.next_bet_id
-        creator_addr = str(gl.message.sender_address)
-        
-        # Build resolution URLs for AI to check (major news sources)
-        resolution_urls = json.dumps([
-            "https://www.reuters.com/technology/",
-            "https://www.bloomberg.com/markets",
-            "https://www.coindesk.com/",
-            "https://news.google.com/search?q=" + question.replace(" ", "+"),
-            "https://www.cnbc.com/technology/"
-        ])
-        
-        # Initialize totals based on choice
-        total_yes = int(initial_stake) if initial_choice == "YES" else 0
-        total_no = int(initial_stake) if initial_choice == "NO" else 0
-        
-        # Store bet data as JSON string (dict not allowed as storage value)
-        bet_info = json.dumps({
+
+        # --- Tạo bet info ---
+        self.bets[bet_id] = {
             "question": question,
-            "creator": creator_addr,
             "deadline": int(deadline),
-            "resolution_urls": resolution_urls,
+            "creator": str(gl.message.sender_address),
+            "total_yes": u256(0),
+            "total_no": u256(0),
             "settled": False,
-            "outcome": "PENDING",
-            "total_yes": total_yes,
-            "total_no": total_no,
-            "ai_reasoning": "",
-            "created_at": int(deadline) - 86400  # approximate
-        })
-        self.bet_data[bet_id] = bet_info
-        
-        # Record creator's stake
-        stake_key = str(int(bet_id)) + "_" + creator_addr
+            "outcome": "",
+            "reason": "",
+            "confidence": u256(0),
+            "created_at": 0
+        }
+
+        # Stake ban đầu của creator
         if initial_choice == "YES":
-            self.stakes_yes[stake_key] = initial_stake
+            self.bets[bet_id]["total_yes"] = initial_stake
         else:
-            self.stakes_no[stake_key] = initial_stake
-        
-        # Update global state
-        self.bet_ids.append(bet_id)
-        self.next_bet_id = u256(int(bet_id) + 1)
-        self.total_bets_count = u256(int(self.total_bets_count) + 1)
-        self.total_volume = u256(int(self.total_volume) + int(initial_stake))
-        
+            self.bets[bet_id]["total_no"] = initial_stake
+
+        # Lưu stake của user
+        sender = gl.message.sender_address
+        if sender not in self.user_stakes:
+            self.user_stakes[sender] = {}
+
+        self.user_stakes[sender][bet_id] = {
+            "choice": initial_choice,
+            "amount": initial_stake,
+            "claimed": False
+        }
+
+        # Update counters
+        self.next_bet_id += u256(1)
+        self.total_bets_created += u256(1)
+        self.total_volume += initial_stake
+
         return bet_id
 
     @gl.public.write
-    def stake(self, bet_id: u256, choice: str, amount: u256) -> str:
+    def stake(self, bet_id: u256, choice: str, amount: u256):
         """
-        Stake tokens on a bet outcome.
+        Stake vào một bet đã tồn tại.
         
         Args:
-            bet_id: The bet to stake on
-            choice: "YES" or "NO"
-            amount: Amount to stake (must be > 0)
-            
-        Returns:
-            Confirmation message
+            bet_id: ID của bet
+            choice: "YES" hoặc "NO"
+            amount: Số token stake
         """
         # --- Validation ---
-        if choice != "YES" and choice != "NO":
-            raise gl.vm.UserError("Choice must be YES or NO")
         if amount == u256(0):
-            raise gl.vm.UserError("Amount must be greater than 0")
-        
-        # Check bet exists and is active
-        bet_json = self.bet_data.get(bet_id, "")
-        if bet_json == "":
-            raise gl.vm.UserError("Bet does not exist")
-        
-        bet = json.loads(bet_json)
+            raise gl.UserError("Amount must be > 0")
+        if choice not in ["YES", "NO"]:
+            raise gl.UserError("Choice must be YES or NO")
+        if bet_id not in self.bets:
+            raise gl.UserError("Bet does not exist")
+
+        bet = self.bets[bet_id]
+
         if bet["settled"]:
-            raise gl.vm.UserError("Bet already settled")
-        
-        # --- Record stake ---
-        sender = str(gl.message.sender_address)
-        stake_key = str(int(bet_id)) + "_" + sender
-        
+            raise gl.UserError("Bet already settled")
+
+        # --- Update pool ---
         if choice == "YES":
-            existing = int(self.stakes_yes.get(stake_key, u256(0)))
-            self.stakes_yes[stake_key] = u256(existing + int(amount))
-            bet["total_yes"] = bet["total_yes"] + int(amount)
+            bet["total_yes"] += amount
         else:
-            existing = int(self.stakes_no.get(stake_key, u256(0)))
-            self.stakes_no[stake_key] = u256(existing + int(amount))
-            bet["total_no"] = bet["total_no"] + int(amount)
-        
-        # Update bet data
-        self.bet_data[bet_id] = json.dumps(bet)
-        
-        # Update global volume
-        self.total_volume = u256(int(self.total_volume) + int(amount))
-        
-        return "Staked " + str(int(amount)) + " on " + choice
+            bet["total_no"] += amount
+
+        # --- Track user stake ---
+        sender = gl.message.sender_address
+        if sender not in self.user_stakes:
+            self.user_stakes[sender] = {}
+
+        if bet_id in self.user_stakes[sender]:
+            # User đã stake trước đó — chỉ cho phép cùng side
+            existing = self.user_stakes[sender][bet_id]
+            if existing["choice"] != choice:
+                raise gl.UserError("Cannot bet on both sides")
+            existing["amount"] += amount
+        else:
+            # Stake mới
+            self.user_stakes[sender][bet_id] = {
+                "choice": choice,
+                "amount": amount,
+                "claimed": False
+            }
+
+        self.total_volume += amount
 
     @gl.public.write
-    def settle_bet(self, bet_id: u256) -> str:
+    def settle_bet(self, bet_id: u256):
         """
-        Settle a bet using AI to read real news sources.
+        Settle bet bằng AI đọc tin tức — ĐÂY LÀ TRÁI TIM CỦA GENNEWS!
         
-        THIS IS THE HEART OF GENNEWS — AI reads actual news and determines
-        whether the predicted event has occurred. Uses:
-        - gl.nondet.web.render() to fetch live news pages
-        - gl.nondet.exec_prompt() for AI analysis
-        - gl.eq_principle.prompt_comparative() for validator consensus
-        
-        Can only be called after the bet's deadline has passed.
-        
-        Args:
-            bet_id: The bet to settle
-            
-        Returns:
-            Settlement result string
+        Flow:
+        1. AI đọc 5 nguồn tin uy tín (Reuters, Bloomberg, TechCrunch...)
+        2. AI phân tích và phán quyết YES/NO
+        3. Validators so sánh kết quả bằng prompt_comparative
+        4. Kết quả consensus được lưu on-chain
         """
         # --- Validation ---
-        bet_json = self.bet_data.get(bet_id, "")
-        if bet_json == "":
-            raise gl.vm.UserError("Bet does not exist")
-        
-        bet = json.loads(bet_json)
+        if bet_id not in self.bets:
+            raise gl.UserError("Bet does not exist")
+
+        bet = self.bets[bet_id]
+
         if bet["settled"]:
-            raise gl.vm.UserError("Bet already settled")
-        
-        # NOTE: Deadline check disabled for testing on Studio
-        # In production, uncomment this:
-        # current_time = int(gl.message_raw["datetime"])
-        # if current_time < bet["deadline"]:
-        #     raise gl.vm.UserError("Deadline not reached yet")
-        
-        # --- AI Settlement (THE CORE FEATURE) ---
-        # Copy data to memory for nondet block (storage inaccessible in nondet)
+            raise gl.UserError("Bet already settled")
+
+        # --- Copy data to local vars (storage inaccessible in nondet) ---
         question = bet["question"]
-        urls = json.loads(bet["resolution_urls"])
-        
+
+        # --- AI SETTLEMENT: The CORE of GenNews ---
+        # Tạo search query từ question
+        search_terms = question.replace("Will ", "").replace("?", "").replace("by ", "")
+
+        # Danh sách nguồn tin uy tín
+        sources = [
+            "https://www.reuters.com/search/news?blob=" + search_terms.replace(" ", "+"),
+            "https://www.bloomberg.com/search?query=" + search_terms.replace(" ", "+"),
+            "https://techcrunch.com/?s=" + search_terms.replace(" ", "+"),
+            "https://www.cnbc.com/search/?query=" + search_terms.replace(" ", "%20"),
+            "https://news.google.com/search?q=" + search_terms.replace(" ", "+")
+        ]
+
         def evaluate():
             """
-            Non-deterministic function: AI reads news and judges outcome.
+            Non-deterministic function: AI đọc tin tức và phán quyết.
             
-            This is why GenLayer is essential — no other blockchain can:
-            1. Fetch real news articles on-chain
-            2. Use AI to analyze them
-            3. Reach consensus on subjective outcomes
+            Đây là lý do GenLayer CẦN THIẾT:
+            1. gl.nondet.web.render() — đọc trang tin tức thật
+            2. gl.nondet.exec_prompt() — AI phân tích nội dung
+            Solidity KHÔNG THỂ làm được điều này.
             """
-            # Step 1: Fetch news from multiple sources using web.render()
-            all_evidence = ""
-            for url in urls:
+            articles = []
+            failed_count = 0
+
+            # Crawl từng nguồn tin
+            for url in sources:
                 try:
-                    page_content = gl.nondet.web.render(url, mode='html')
-                    all_evidence = all_evidence + "\n--- SOURCE: " + url + " ---\n"
-                    # Limit content per source to avoid token overflow
-                    all_evidence = all_evidence + str(page_content)[:3000]
+                    content = gl.nondet.web.render(url, mode="html")
+                    # Lấy 2000 ký tự đầu (tránh token overflow)
+                    articles.append(url + ":\n" + str(content)[:2000])
                 except Exception:
-                    all_evidence = all_evidence + "\n--- SOURCE: " + url + " (failed to fetch) ---\n"
-            
-            # Step 2: AI analyzes all evidence using exec_prompt()
-            analysis_prompt = """You are an expert news analyst settling a prediction market bet.
+                    failed_count += 1
+                    continue
 
-PREDICTION QUESTION: """ + question + """
+            # Nếu không đọc được nguồn nào
+            if len(articles) == 0:
+                return {"outcome": "NO", "confidence": 0, "reason": "Cannot access any news source"}
 
-NEWS EVIDENCE FROM MULTIPLE SOURCES:
-""" + all_evidence + """
+            # Ghép nội dung tất cả nguồn
+            combined = "\n\n--- SOURCE ---\n\n".join(articles)
 
-TASK: Based on the news evidence above, determine if the predicted event has occurred or not.
+            # Prompt cho AI Judge
+            prompt = """You are a neutral AI judge for a prediction market called GenNews.
+Your job is to determine if an event happened based on credible news sources.
 
-IMPORTANT RULES:
-1. Only answer YES if there is CLEAR evidence the event happened
-2. Answer NO if evidence shows it did NOT happen or there is no evidence
-3. Be objective — do not speculate
-4. Provide brief reasoning
+**Question to resolve:**
+""" + question + """
 
-Respond ONLY with this exact JSON format, nothing else:
-{"outcome": "YES" or "NO", "confidence": 1-10, "reasoning": "brief explanation"}"""
+**News articles from """ + str(len(articles)) + """ sources:**
+""" + combined + """
 
-            result = gl.nondet.exec_prompt(analysis_prompt, response_format='json')
-            
-            # Normalize the result for consensus comparison
-            return json.dumps(result, sort_keys=True)
-        
-        # Step 3: Validators reach consensus using prompt_comparative
-        # This ensures multiple AI validators agree on the outcome
-        # Uses semantic comparison — NOT strict equality (Rule: no strict_eq)
-        outcome_str = gl.eq_principle.prompt_comparative(
+**Your task:**
+1. Analyze the evidence above carefully
+2. Determine if the event described in the question has ACTUALLY HAPPENED (YES) or NOT (NO)
+3. Rate your confidence level (0-100)
+4. Provide a brief reasoning (max 100 words)
+
+**Rules:**
+- Only answer YES if there is CLEAR, EXPLICIT evidence from multiple sources
+- If sources contradict each other, lower your confidence
+- If no relevant information found, answer NO with low confidence
+- Be conservative: when in doubt, require stronger evidence
+
+**Return JSON format (strict):**
+{"outcome": "YES" or "NO", "confidence": 85, "reason": "Brief explanation"}"""
+
+            result = gl.nondet.exec_prompt(prompt, response_format="json")
+            return result
+
+        # --- CONSENSUS: prompt_comparative so sánh Ý NGHĨA, không so format ---
+        # Đây là lý do KHÔNG dùng strict_eq: kết quả AI có thể khác format
+        # nhưng cùng ý nghĩa (cùng YES/NO)
+        result = gl.eq_principle.prompt_comparative(
             evaluate,
-            principle='The "outcome" field (YES or NO) must be exactly the same between leader and validator results. The "confidence" and "reasoning" fields can differ.'
+            principle="""Two AI judge results match if and only if:
+1. They have the SAME 'outcome' field (both YES or both NO)
+2. The reasoning supports the same conclusion
+The exact confidence score and wording can differ."""
         )
-        
-        # --- Update state with consensus result ---
-        outcome_data = json.loads(outcome_str)
-        final_outcome = outcome_data.get("outcome", "NO")
-        reasoning = outcome_data.get("reasoning", "AI analysis complete")
-        confidence = outcome_data.get("confidence", 5)
-        
+
+        # --- Lưu kết quả consensus on-chain ---
         bet["settled"] = True
-        bet["outcome"] = final_outcome
-        bet["ai_reasoning"] = "Confidence: " + str(confidence) + "/10. " + str(reasoning)
-        self.bet_data[bet_id] = json.dumps(bet)
-        
-        # Update global stats
-        self.total_settled_count = u256(int(self.total_settled_count) + 1)
-        
-        return "Settled: " + final_outcome + " (Confidence: " + str(confidence) + "/10)"
+        bet["outcome"] = result.get("outcome", "NO") if isinstance(result, dict) else "NO"
+        bet["reason"] = result.get("reason", "AI analysis complete") if isinstance(result, dict) else str(result)
+        bet["confidence"] = u256(result.get("confidence", 0)) if isinstance(result, dict) else u256(0)
 
     @gl.public.write
-    def claim_winnings(self, bet_id: u256) -> str:
+    def claim_winnings(self, bet_id: u256) -> u256:
         """
-        Claim winnings from a settled bet.
-        Winners receive proportional share of the total losing pool.
+        User claim tiền thắng cược.
         
-        Args:
-            bet_id: The settled bet to claim from
-            
-        Returns:
-            Claim result message
+        Payout = (user_stake / winning_pool) * total_pool
+        VD: stake 100, winning_pool 500, total_pool 1000 → payout = 200
+        
+        Returns: số token claim được (0 nếu thua)
         """
         # --- Validation ---
-        bet_json = self.bet_data.get(bet_id, "")
-        if bet_json == "":
-            raise gl.vm.UserError("Bet does not exist")
-        
-        bet = json.loads(bet_json)
+        if bet_id not in self.bets:
+            raise gl.UserError("Bet does not exist")
+
+        bet = self.bets[bet_id]
+
         if not bet["settled"]:
-            raise gl.vm.UserError("Bet not settled yet")
-        
-        sender = str(gl.message.sender_address)
-        claim_key = str(int(bet_id)) + "_" + sender
-        
-        # Check not already claimed
-        already_claimed = self.claims.get(claim_key, "")
-        if already_claimed == "1":
-            raise gl.vm.UserError("Already claimed")
-        
-        # Check if sender is on winning side
-        stake_key = str(int(bet_id)) + "_" + sender
-        outcome = bet["outcome"]
-        
-        if outcome == "YES":
-            winner_stake = int(self.stakes_yes.get(stake_key, u256(0)))
-        else:
-            winner_stake = int(self.stakes_no.get(stake_key, u256(0)))
-        
-        if winner_stake == 0:
-            raise gl.vm.UserError("You have no winning stake")
-        
-        # Calculate winnings: proportional share of total pool
+            raise gl.UserError("Bet not settled yet")
+
+        sender = gl.message.sender_address
+        if sender not in self.user_stakes:
+            raise gl.UserError("You have no stake in this bet")
+        if bet_id not in self.user_stakes[sender]:
+            raise gl.UserError("You have no stake in this bet")
+
+        user_stake = self.user_stakes[sender][bet_id]
+
+        if user_stake["claimed"]:
+            raise gl.UserError("Already claimed")
+
+        # --- Kiểm tra đoán đúng/sai ---
+        if user_stake["choice"] != bet["outcome"]:
+            # Thua cược
+            user_stake["claimed"] = True
+            return u256(0)
+
+        # --- Thắng cược: tính payout ---
         total_pool = bet["total_yes"] + bet["total_no"]
-        winning_pool = bet["total_yes"] if outcome == "YES" else bet["total_no"]
-        
-        if winning_pool == 0:
-            raise gl.vm.UserError("No winners — cannot claim")
-        
-        # Winner gets: (their_stake / winning_pool) * total_pool
-        winnings = (winner_stake * total_pool) // winning_pool
-        
-        # Mark as claimed
-        self.claims[claim_key] = "1"
-        
-        return "Claimed " + str(winnings) + " tokens (staked " + str(winner_stake) + ")"
+        winning_pool = bet["total_yes"] if bet["outcome"] == "YES" else bet["total_no"]
+
+        if winning_pool == u256(0):
+            raise gl.UserError("No winning stakes")
+
+        # payout = (stake / winning_pool) * total_pool
+        payout = (user_stake["amount"] * total_pool) // winning_pool
+
+        user_stake["claimed"] = True
+
+        return payout
 
     # ===================================================================
-    # VIEW METHODS — Read-only queries (no gas cost)
+    # VIEW METHODS (read-only, no gas)
     # ===================================================================
 
     @gl.public.view
-    def get_bet(self, bet_id: u256) -> str:
-        """Get detailed information about a specific bet."""
-        bet_json = self.bet_data.get(bet_id, "")
-        if bet_json == "":
-            return json.dumps({"error": "Bet not found"})
+    def get_bet(self, bet_id: u256) -> dict:
+        """Lấy thông tin chi tiết một bet."""
+        if bet_id not in self.bets:
+            raise gl.UserError("Bet does not exist")
         
-        bet = json.loads(bet_json)
+        bet = dict(self.bets[bet_id])
         bet["bet_id"] = int(bet_id)
-        return json.dumps(bet)
+        bet["total_yes"] = int(bet["total_yes"])
+        bet["total_no"] = int(bet["total_no"])
+        bet["confidence"] = int(bet["confidence"])
+        return bet
 
     @gl.public.view
-    def get_all_bets(self) -> str:
-        """Get a list of all bets with their basic info."""
-        bets = []
-        for bid in self.bet_ids:
-            bet_json = self.bet_data.get(bid, "")
-            if bet_json != "":
-                bet = json.loads(bet_json)
-                bet["bet_id"] = int(bid)
-                bets.append(bet)
-        return json.dumps(bets)
+    def get_user_stake(self, user: Address, bet_id: u256) -> dict:
+        """Lấy thông tin stake của user trong một bet."""
+        if user not in self.user_stakes:
+            return {"choice": "", "amount": 0, "claimed": False}
+        if bet_id not in self.user_stakes[user]:
+            return {"choice": "", "amount": 0, "claimed": False}
+        
+        stake = dict(self.user_stakes[user][bet_id])
+        stake["amount"] = int(stake["amount"])
+        return stake
 
     @gl.public.view
-    def get_stats(self) -> str:
-        """Get overall platform statistics."""
-        return json.dumps({
-            "total_bets": int(self.total_bets_count),
-            "total_settled": int(self.total_settled_count),
+    def get_all_bets(self) -> list:
+        """Lấy danh sách tất cả bets với thông tin cơ bản."""
+        result = []
+        for i in range(1, int(self.next_bet_id)):
+            bid = u256(i)
+            if bid in self.bets:
+                bet = dict(self.bets[bid])
+                bet["bet_id"] = i
+                bet["total_yes"] = int(bet["total_yes"])
+                bet["total_no"] = int(bet["total_no"])
+                bet["confidence"] = int(bet["confidence"])
+                result.append(bet)
+        return result
+
+    @gl.public.view
+    def get_stats(self) -> dict:
+        """Lấy thống kê tổng quan."""
+        return {
+            "total_bets": int(self.total_bets_created),
             "total_volume": int(self.total_volume),
             "next_bet_id": int(self.next_bet_id)
-        })
-
-    @gl.public.view
-    def get_user_stakes(self, bet_id: u256, user_address: str) -> str:
-        """Get a user's stakes on a specific bet."""
-        stake_key = str(int(bet_id)) + "_" + user_address
-        yes_stake = int(self.stakes_yes.get(stake_key, u256(0)))
-        no_stake = int(self.stakes_no.get(stake_key, u256(0)))
-        
-        claim_key = str(int(bet_id)) + "_" + user_address
-        has_claimed = self.claims.get(claim_key, "") == "1"
-        
-        return json.dumps({
-            "yes_stake": yes_stake,
-            "no_stake": no_stake,
-            "has_claimed": has_claimed
-        })
+        }

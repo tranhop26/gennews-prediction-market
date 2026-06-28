@@ -2,43 +2,42 @@ import { createClient, createAccount } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 import { TransactionStatus } from "genlayer-js/types";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Types (match contract return types) ─────────────────────────────────────
 
-/** A single prediction market bet (matches contract JSON output) */
+/** A single prediction market bet */
 export interface Bet {
   bet_id: number;
   question: string;
-  creator: string;
   deadline: number;
-  resolution_urls: string;
-  settled: boolean;
-  outcome: string; // "PENDING" | "YES" | "NO"
+  creator: string;
   total_yes: number;
   total_no: number;
-  ai_reasoning: string;
+  settled: boolean;
+  outcome: string;
+  reason: string;
+  confidence: number;
   created_at: number;
 }
 
 /** Global platform statistics */
 export interface Stats {
   total_bets: number;
-  total_settled: number;
   total_volume: number;
   next_bet_id: number;
 }
 
-/** A user's stake information for a specific bet */
-export interface UserStakes {
-  yes_stake: number;
-  no_stake: number;
-  has_claimed: boolean;
+/** A user's stake info for a specific bet */
+export interface UserStake {
+  choice: string;
+  amount: number;
+  claimed: boolean;
 }
 
 // ─── Contract Address ────────────────────────────────────────────────────────
 
-/** Contract address loaded from environment variables */
 export const CONTRACT_ADDRESS: `0x${string}` =
-  (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS || "0x0000000000000000000000000000000000000000") as `0x${string}`;
+  (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ||
+    "0x0000000000000000000000000000000000000000") as `0x${string}`;
 
 // ─── Clients & Account ──────────────────────────────────────────────────────
 
@@ -47,7 +46,7 @@ export const readClient = createClient({
   chain: studionet,
 });
 
-/** Account used for write (transaction) operations */
+/** Account used for write operations */
 export const account = createAccount();
 
 /** Write client — signs transactions with the generated account */
@@ -58,7 +57,7 @@ export const writeClient = createClient({
 
 // ─── Read Helpers ────────────────────────────────────────────────────────────
 
-/** Fetch every bet on the platform */
+/** Fetch every bet on the platform (returns full bet objects) */
 export async function getAllBets(): Promise<Bet[]> {
   try {
     const raw = await readClient.readContract({
@@ -66,15 +65,16 @@ export async function getAllBets(): Promise<Bet[]> {
       functionName: "get_all_bets",
       args: [],
     });
-    const parsed = JSON.parse(raw as string);
-    return Array.isArray(parsed) ? parsed : [];
+    // Contract returns list of dicts directly
+    const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return Array.isArray(data) ? data : [];
   } catch (error) {
     console.error("[getAllBets] Failed:", error);
     return [];
   }
 }
 
-/** Fetch a single bet by its ID */
+/** Fetch a single bet by ID */
 export async function getBet(id: number): Promise<Bet | null> {
   try {
     const raw = await readClient.readContract({
@@ -82,9 +82,8 @@ export async function getBet(id: number): Promise<Bet | null> {
       functionName: "get_bet",
       args: [id],
     });
-    const parsed = JSON.parse(raw as string);
-    if (parsed.error) return null;
-    return parsed as Bet;
+    const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return data as Bet;
   } catch (error) {
     console.error(`[getBet] Failed for #${id}:`, error);
     return null;
@@ -99,28 +98,30 @@ export async function getStats(): Promise<Stats> {
       functionName: "get_stats",
       args: [],
     });
-    return JSON.parse(raw as string) as Stats;
+    const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return data as Stats;
   } catch (error) {
     console.error("[getStats] Failed:", error);
-    return { total_bets: 0, total_settled: 0, total_volume: 0, next_bet_id: 1 };
+    return { total_bets: 0, total_volume: 0, next_bet_id: 1 };
   }
 }
 
-/** Fetch a user's stakes for a specific bet */
-export async function getUserStakes(
-  betId: number,
-  userAddress: string
-): Promise<UserStakes> {
+/** Fetch a user's stake for a specific bet */
+export async function getUserStake(
+  userAddress: string,
+  betId: number
+): Promise<UserStake> {
   try {
     const raw = await readClient.readContract({
       address: CONTRACT_ADDRESS,
-      functionName: "get_user_stakes",
-      args: [betId, userAddress],
+      functionName: "get_user_stake",
+      args: [userAddress, betId],
     });
-    return JSON.parse(raw as string) as UserStakes;
+    const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return data as UserStake;
   } catch (error) {
-    console.error(`[getUserStakes] Failed for bet #${betId}:`, error);
-    return { yes_stake: 0, no_stake: 0, has_claimed: false };
+    console.error(`[getUserStake] Failed for bet #${betId}:`, error);
+    return { choice: "", amount: 0, claimed: false };
   }
 }
 
@@ -193,4 +194,27 @@ export async function claimWinnings(betId: number): Promise<string> {
     status: TransactionStatus.ACCEPTED,
   });
   return hash;
+}
+
+// ─── Utility Functions ───────────────────────────────────────────────────────
+
+/** Format unix timestamp to readable date */
+export function formatDeadline(timestamp: number): string {
+  return new Date(timestamp * 1000).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+/** Calculate YES/NO odds as percentages */
+export function calculateOdds(
+  totalYes: number,
+  totalNo: number
+): { yes: string; no: string } {
+  const total = totalYes + totalNo;
+  if (total === 0) return { yes: "50%", no: "50%" };
+  const yesPercent = ((totalYes / total) * 100).toFixed(1);
+  const noPercent = ((totalNo / total) * 100).toFixed(1);
+  return { yes: `${yesPercent}%`, no: `${noPercent}%` };
 }

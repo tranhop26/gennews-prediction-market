@@ -125,14 +125,12 @@ export default function HomePage() {
               },
               {
                 label: "Settled",
-                value: stats?.total_settled ?? "—",
+                value: bets.filter(b => b.settled).length,
                 icon: "✅",
               },
               {
                 label: "Active",
-                value: stats
-                  ? stats.total_bets - stats.total_settled
-                  : "—",
+                value: bets.filter(b => !b.settled).length,
                 icon: "🔴",
               },
             ].map((s, i) => (
