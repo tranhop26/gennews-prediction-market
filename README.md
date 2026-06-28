@@ -268,7 +268,7 @@ outcome = gl.eq_principle.prompt_comparative(
 ## 🌐 Live Demo
 
 - **Contract**: `0x79c3eeA98B9f2c70D05Cd19a7f978b756634Cdee` on [GenLayer Studio](https://studio.genlayer.com)
-- **Frontend**: [Coming soon — deploy to Vercel]
+- **Frontend**: https://frontend-six-beige-93.vercel.app
 - **Video Demo**: [Coming soon — record with Loom]
 
 ---
