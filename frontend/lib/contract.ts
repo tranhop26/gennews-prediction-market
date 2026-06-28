@@ -1,5 +1,5 @@
 import { createClient, createAccount } from "genlayer-js";
-import { simulator } from "genlayer-js/chains";
+import { studionet } from "genlayer-js/chains";
 import { TransactionStatus } from "genlayer-js/types";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ export const CONTRACT_ADDRESS: `0x${string}` =
 
 /** Read-only client — no account required */
 export const readClient = createClient({
-  chain: simulator,
+  chain: studionet,
 });
 
 /** Account used for write (transaction) operations */
@@ -52,7 +52,7 @@ export const account = createAccount();
 
 /** Write client — signs transactions with the generated account */
 export const writeClient = createClient({
-  chain: simulator,
+  chain: studionet,
   account,
 });
 
