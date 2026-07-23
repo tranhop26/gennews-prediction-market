@@ -233,6 +233,11 @@ outcome = gl.eq_principle.prompt_comparative(
 - No winning stake → `UserError`
 - URL fetch failure → graceful fallback in AI prompt
 
+### Key Refactorings & Enhancements
+- 🟢 **Real Contract-Side Escrow & Value Transfers**: `@gl.public.write.payable` functions (`create_bet` & `stake`) lock native GEN deposits into contract escrow. `claim_winnings` executes real value transfers via `gl.get_contract_at(sender).emit_transfer(value=payout)`. Frontend SDK passes `value: BigInt(amount)`.
+- 🟢 **Market Deadline Enforcement**: Strict deadline checks enforced in `create_bet`, `stake` (blocks late staking), and `settle_bet` (blocks early settlement).
+- 🟢 **Unresolved State Preservation**: If fewer than 2 reliable news sources can be rendered/accessed, outcome defaults to `UNRESOLVED`. Users claim 100% of their staked tokens back as an escrow refund.
+
 ---
 
 ## 🏆 Why This Scores 4-5 on All Axes

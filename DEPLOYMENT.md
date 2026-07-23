@@ -3,8 +3,9 @@
 ## Contract Details
 - **Network:** GenLayer Studio (Simulator)
 - **Contract File:** `contracts/BettingPool.py`
-- **Contract Address:** `[DEPLOY_ON_STUDIO_AND_PASTE_HERE]`
-- **Deployed at:** Pending deployment
+- **Contract Address:** `0x79c3eeA98B9f2c70D05Cd19a7f978b756634Cdee`
+- **Deployed Studio Link:** https://studio.genlayer.com/contracts/0x79c3eeA98B9f2c70D05Cd19a7f978b756634Cdee
+- **Status:** Deployed & Finalized
 
 ## How to Deploy
 
