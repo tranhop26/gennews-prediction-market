@@ -89,6 +89,15 @@ export default function BetDetailPage() {
   const deadlineDate = new Date(bet.deadline * 1000);
   const now = new Date();
   const isExpired = deadlineDate < now;
+  const [simulatedStake, setSimulatedStake] = useState("100");
+
+  const calcPayout = (choice: "YES" | "NO") => {
+    const amount = Number(simulatedStake) || 0;
+    if (amount <= 0) return 0;
+    const newTotalPool = totalPool + amount;
+    const newWinningPool = (choice === "YES" ? bet.total_yes : bet.total_no) + amount;
+    return newWinningPool > 0 ? Math.floor((amount * newTotalPool) / newWinningPool) : amount;
+  };
 
   return (
     <div className="min-h-screen px-4 py-12 sm:px-6 lg:px-8 hero-bg">
@@ -202,6 +211,56 @@ export default function BetDetailPage() {
                 </div>
               </div>
             </div>
+
+            {/* Live Payout Simulator */}
+            {!bet.settled && (
+              <div className="glass-card p-6 animate-fade-in" style={{ animationDelay: "0.15s" }}>
+                <h2 className="text-lg font-semibold text-white mb-3 flex items-center gap-2">
+                  <span>🧮</span> Live Return Simulator
+                </h2>
+                <p className="text-xs text-gray-400 mb-4">
+                  Simulate your potential returns based on current pool proportions
+                </p>
+
+                <div className="space-y-4">
+                  <label className="block">
+                    <span className="text-xs font-medium text-gray-300 block mb-1">
+                      Simulated Stake (GEN tokens)
+                    </span>
+                    <input
+                      type="number"
+                      value={simulatedStake}
+                      onChange={(e) => setSimulatedStake(e.target.value)}
+                      className="input-glass !py-2 text-sm"
+                      placeholder="100"
+                      min="1"
+                    />
+                  </label>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-center">
+                      <div className="text-xs text-emerald-400 font-semibold mb-1">If YES Wins</div>
+                      <div className="text-lg font-bold text-white">
+                        {calcPayout("YES").toLocaleString()} GEN
+                      </div>
+                      <div className="text-[10px] text-gray-400 mt-0.5">
+                        ROI: {Number(simulatedStake) > 0 ? (((calcPayout("YES") - Number(simulatedStake)) / Number(simulatedStake)) * 100).toFixed(0) : 0}%
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-center">
+                      <div className="text-xs text-red-400 font-semibold mb-1">If NO Wins</div>
+                      <div className="text-lg font-bold text-white">
+                        {calcPayout("NO").toLocaleString()} GEN
+                      </div>
+                      <div className="text-[10px] text-gray-400 mt-0.5">
+                        ROI: {Number(simulatedStake) > 0 ? (((calcPayout("NO") - Number(simulatedStake)) / Number(simulatedStake)) * 100).toFixed(0) : 0}%
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* AI Reasoning (if settled) */}
             {bet.settled && bet.reason && (
