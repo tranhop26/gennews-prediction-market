@@ -236,23 +236,31 @@ export default function BetDetailPage() {
                   className={`p-6 rounded-xl text-center ${
                     bet.outcome === "YES"
                       ? "bg-emerald-500/10 border border-emerald-500/30"
-                      : "bg-red-500/10 border border-red-500/30"
+                      : bet.outcome === "NO"
+                      ? "bg-red-500/10 border border-red-500/30"
+                      : "bg-yellow-500/10 border border-yellow-500/30"
                   }`}
                 >
                   <div className="text-4xl mb-2">
-                    {bet.outcome === "YES" ? "✅" : "❌"}
+                    {bet.outcome === "YES" ? "✅" : bet.outcome === "NO" ? "❌" : "⚠️"}
                   </div>
                   <div
                     className={`text-3xl font-extrabold ${
                       bet.outcome === "YES"
                         ? "text-emerald-400"
-                        : "text-red-400"
+                        : bet.outcome === "NO"
+                        ? "text-red-400"
+                        : "text-yellow-400"
                     }`}
                   >
                     {bet.outcome}
                   </div>
                   <p className="text-sm text-gray-400 mt-2">
-                    {bet.outcome === "YES" ? "YES" : "NO"} side wins the pool
+                    {bet.outcome === "YES"
+                      ? "YES side wins the pool"
+                      : bet.outcome === "NO"
+                      ? "NO side wins the pool"
+                      : "The market is unresolved. Claim your stake back."}
                   </p>
                 </div>
 
@@ -272,7 +280,7 @@ export default function BetDetailPage() {
                         Claiming...
                       </>
                     ) : (
-                      <>💸 Claim Winnings</>
+                      <>{bet.outcome === "UNRESOLVED" ? "💸 Claim Refund" : "💸 Claim Winnings"}</>
                     )}
                   </button>
                   {claimResult && (

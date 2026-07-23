@@ -138,7 +138,7 @@ export async function createBet(
     address: CONTRACT_ADDRESS,
     functionName: "create_bet",
     args: [question, deadline, initialStake, initialChoice],
-    value: BigInt(0),
+    value: BigInt(initialStake),
   });
   await writeClient.waitForTransactionReceipt({
     hash,
@@ -157,7 +157,7 @@ export async function stakeBet(
     address: CONTRACT_ADDRESS,
     functionName: "stake",
     args: [betId, choice, amount],
-    value: BigInt(0),
+    value: BigInt(amount),
   });
   await writeClient.waitForTransactionReceipt({
     hash,

@@ -2,6 +2,7 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 from genlayer import *
 import json
+import datetime
 
 
 class Contract(gl.Contract):
@@ -33,16 +34,25 @@ class Contract(gl.Contract):
         self.total_volume = u256(0)
 
     # ===================================================================
-    # HELPER: composite key for user_stakes
+    # HELPERS: composite key for user_stakes & datetime parsing
     # ===================================================================
     def _stake_key(self, user: str, bet_id: u256) -> str:
         return str(user) + "_" + str(int(bet_id))
+
+    def _now(self) -> u256:
+        raw_dt = gl.message_raw["datetime"]
+        if raw_dt.endswith("Z"):
+            raw_dt = raw_dt[:-1] + "+00:00"
+        parsed = datetime.datetime.fromisoformat(raw_dt)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return u256(int(parsed.timestamp()))
 
     # ===================================================================
     # WRITE METHODS
     # ===================================================================
 
-    @gl.public.write
+    @gl.public.write.payable
     def create_bet(
         self,
         question: str,
@@ -51,14 +61,22 @@ class Contract(gl.Contract):
         initial_choice: str
     ) -> u256:
         """
-        Create a new prediction market bet.
+        Create a new prediction market bet with escrowed initial stake.
         """
-        if initial_stake == u256(0):
-            raise gl.UserError("Initial stake must be > 0")
+        value_sent = u256(gl.message.value)
+        if value_sent == u256(0):
+            raise gl.UserError("Initial stake must be > 0; send GEN with this call to fund escrow")
+        if initial_stake != value_sent:
+            raise gl.UserError("Parameter initial_stake must match the sent GEN value")
         if initial_choice not in ["YES", "NO"]:
             raise gl.UserError("Initial choice must be YES or NO")
         if len(question) < 10:
             raise gl.UserError("Question too short (min 10 chars)")
+
+        # Enforce deadline in the future
+        now = self._now()
+        if deadline <= now:
+            raise gl.UserError("Deadline must be in the future")
 
         bet_id = self.next_bet_id
         creator = str(gl.message.sender_address)
@@ -76,7 +94,7 @@ class Contract(gl.Contract):
             "outcome": "",
             "reason": "",
             "confidence": 0,
-            "created_at": 0
+            "created_at": int(now)
         }
         self.bets[bet_id] = json.dumps(bet_info)
 
@@ -96,13 +114,16 @@ class Contract(gl.Contract):
 
         return bet_id
 
-    @gl.public.write
+    @gl.public.write.payable
     def stake(self, bet_id: u256, choice: str, amount: u256):
         """
-        Stake on an existing bet.
+        Stake on an existing bet with real contract escrow.
         """
-        if amount == u256(0):
-            raise gl.UserError("Amount must be > 0")
+        value_sent = u256(gl.message.value)
+        if value_sent == u256(0):
+            raise gl.UserError("Amount must be > 0; send GEN with this call to fund escrow")
+        if amount != value_sent:
+            raise gl.UserError("Parameter amount must match the sent GEN value")
         if choice not in ["YES", "NO"]:
             raise gl.UserError("Choice must be YES or NO")
         if bet_id not in self.bets:
@@ -112,6 +133,11 @@ class Contract(gl.Contract):
 
         if bet["settled"]:
             raise gl.UserError("Bet already settled")
+
+        # Enforce market deadline has not passed
+        now = self._now()
+        if now >= bet["deadline"]:
+            raise gl.UserError("Staking deadline has passed. Staking is closed for this market.")
 
         # Update pool
         if choice == "YES":
@@ -146,8 +172,8 @@ class Contract(gl.Contract):
         Settle bet using AI reading real news - THIS IS THE HEART OF GENNEWS!
 
         Flow:
-        1. AI reads 5 credible news sources (Reuters, Bloomberg, TechCrunch...)
-        2. AI analyzes and judges YES/NO
+        1. AI reads credible news sources (Reuters, Bloomberg, TechCrunch, CNBC, Google News)
+        2. AI analyzes and judges YES/NO/UNRESOLVED
         3. Validators compare results using prompt_comparative
         4. Consensus result is stored on-chain
         """
@@ -158,6 +184,11 @@ class Contract(gl.Contract):
 
         if bet["settled"]:
             raise gl.UserError("Bet already settled")
+
+        # Enforce market deadline has passed
+        now = self._now()
+        if now < bet["deadline"]:
+            raise gl.UserError("Cannot settle before the market deadline has passed")
 
         # Copy question to local var (storage inaccessible in nondet)
         question = bet["question"]
@@ -177,21 +208,25 @@ class Contract(gl.Contract):
         def evaluate():
             """
             Non-deterministic: AI reads news and judges outcome.
-            gl.nondet.web.render() + gl.nondet.exec_prompt() = impossible on Solidity
+            Preserves UNRESOLVED state if reliable source evidence is unavailable (< 2 sources).
             """
             articles = []
-            failed_count = 0
 
             for url in sources:
                 try:
                     content = gl.nondet.web.render(url, mode="html")
-                    articles.append(url + ":\n" + str(content)[:2000])
+                    if content and len(str(content)) > 50:
+                        articles.append(url + ":\n" + str(content)[:2000])
                 except Exception:
-                    failed_count += 1
                     continue
 
-            if len(articles) == 0:
-                return {"outcome": "NO", "confidence": 0, "reason": "Cannot access any news source"}
+            # Preserves UNRESOLVED state when reliable source evidence is unavailable (< 2 sources)
+            if len(articles) < 2:
+                return json.dumps({
+                    "outcome": "UNRESOLVED",
+                    "confidence": 0,
+                    "reason": "Insufficient reliable news evidence: fewer than 2 sources accessible to verify market outcome"
+                })
 
             combined = "\n\n--- SOURCE ---\n\n".join(articles)
 
@@ -206,44 +241,62 @@ Your job is to determine if an event happened based on credible news sources.
 
 **Your task:**
 1. Analyze the evidence above carefully
-2. Determine if the event described in the question has ACTUALLY HAPPENED (YES) or NOT (NO)
+2. Determine if the event described in the question has ACTUALLY HAPPENED (YES), NOT HAPPENED (NO), or if it is UNRESOLVED due to lack of evidence, ambiguous/conflicting reports, or lack of reliable source information.
 3. Rate your confidence level (0-100)
 4. Provide a brief reasoning (max 100 words)
 
 **Rules:**
 - Only answer YES if there is CLEAR, EXPLICIT evidence from multiple sources
-- If sources contradict each other, lower your confidence
-- If no relevant information found, answer NO with low confidence
-- Be conservative: when in doubt, require stronger evidence
+- Only answer NO if there is CLEAR, EXPLICIT evidence from multiple sources that the event did not happen or that the deadline has passed without it happening.
+- If there is insufficient, conflicting, or missing information about the event, you MUST set the outcome to UNRESOLVED.
+- Be conservative: when in doubt, set outcome to UNRESOLVED.
 
 **Return JSON format (strict):**
-{"outcome": "YES" or "NO", "confidence": 85, "reason": "Brief explanation"}"""
+{"outcome": "YES" | "NO" | "UNRESOLVED", "confidence": <int>, "reason": "Brief explanation"}"""
 
             result = gl.nondet.exec_prompt(prompt, response_format="json")
+            if isinstance(result, dict):
+                return json.dumps(result, sort_keys=True)
             return result
 
         # CONSENSUS: prompt_comparative compares MEANING, not format
-        # NOT strict_eq because AI results may differ in wording but agree on YES/NO
-        result = gl.eq_principle.prompt_comparative(
-            evaluate,
-            principle="""Two AI judge results match if and only if:
-1. They have the SAME 'outcome' field (both YES or both NO)
+        principle = """Two AI judge results match if and only if:
+1. They have the SAME 'outcome' field (both YES, both NO, or both UNRESOLVED)
 2. The reasoning supports the same conclusion
 The exact confidence score and wording can differ."""
-        )
+
+        result_str = gl.eq_principle.prompt_comparative(evaluate, principle)
+
+        # Parse result string safely with UNRESOLVED fallback
+        parsed_result = {}
+        if isinstance(result_str, str):
+            try:
+                parsed_result = json.loads(result_str)
+            except Exception:
+                parsed_result = {"outcome": "UNRESOLVED", "reason": "Failed to parse consensus response"}
+        elif isinstance(result_str, dict):
+            parsed_result = result_str
+        else:
+            parsed_result = {"outcome": "UNRESOLVED", "reason": "Unrecognized consensus format"}
+
+        outcome = parsed_result.get("outcome", "UNRESOLVED")
+        if outcome not in ["YES", "NO", "UNRESOLVED"]:
+            outcome = "UNRESOLVED"
 
         # Store consensus result on-chain
         bet["settled"] = True
-        bet["outcome"] = result.get("outcome", "NO") if isinstance(result, dict) else "NO"
-        bet["reason"] = result.get("reason", "AI analysis complete") if isinstance(result, dict) else str(result)
-        bet["confidence"] = result.get("confidence", 0) if isinstance(result, dict) else 0
+        bet["outcome"] = outcome
+        bet["reason"] = parsed_result.get("reason", "AI news analysis completed")
+        bet["confidence"] = int(parsed_result.get("confidence", 0))
         self.bets[bet_id] = json.dumps(bet)
 
     @gl.public.write
     def claim_winnings(self, bet_id: u256) -> u256:
         """
-        Claim winnings from a settled bet.
+        Claim escrowed winnings or refund from a settled bet.
         Payout = (user_stake / winning_pool) * total_pool
+        If UNRESOLVED, returns 100% of user stake back.
+        Executing real contract-side value transfer to user address.
         """
         if bet_id not in self.bets:
             raise gl.UserError("Bet does not exist")
@@ -264,21 +317,31 @@ The exact confidence score and wording can differ."""
         if user_stake["claimed"]:
             raise gl.UserError("Already claimed")
 
-        if user_stake["choice"] != bet["outcome"]:
+        if bet["outcome"] == "UNRESOLVED":
+            # If the market is unresolved/cancelled, refund exact user stake from escrow
+            payout = user_stake["amount"]
+        elif user_stake["choice"] != bet["outcome"]:
+            # Lost the bet
             user_stake["claimed"] = True
             self.user_stakes[stake_key] = json.dumps(user_stake)
             return u256(0)
+        else:
+            # Won the bet
+            total_pool = bet["total_yes"] + bet["total_no"]
+            winning_pool = bet["total_yes"] if bet["outcome"] == "YES" else bet["total_no"]
 
-        total_pool = bet["total_yes"] + bet["total_no"]
-        winning_pool = bet["total_yes"] if bet["outcome"] == "YES" else bet["total_no"]
-
-        if winning_pool == 0:
-            raise gl.UserError("No winning stakes")
-
-        payout = (user_stake["amount"] * total_pool) // winning_pool
+            if winning_pool == 0:
+                # If no winning pool, refund exact stake
+                payout = user_stake["amount"]
+            else:
+                payout = (user_stake["amount"] * total_pool) // winning_pool
 
         user_stake["claimed"] = True
         self.user_stakes[stake_key] = json.dumps(user_stake)
+
+        # Real contract-side transfer of escrowed winnings / refund
+        if payout > 0:
+            gl.get_contract_at(gl.message.sender_address).emit_transfer(value=int(payout))
 
         return u256(payout)
 
