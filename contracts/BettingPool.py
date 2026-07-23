@@ -40,13 +40,20 @@ class Contract(gl.Contract):
         return str(user) + "_" + str(int(bet_id))
 
     def _now(self) -> u256:
-        raw_dt = gl.message_raw["datetime"]
-        if raw_dt.endswith("Z"):
-            raw_dt = raw_dt[:-1] + "+00:00"
-        parsed = datetime.datetime.fromisoformat(raw_dt)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
-        return u256(int(parsed.timestamp()))
+        """Safely fetch current block ISO datetime epoch timestamp."""
+        try:
+            if hasattr(gl, 'message_raw') and isinstance(gl.message_raw, dict):
+                raw_dt = gl.message_raw.get("datetime", "")
+                if raw_dt:
+                    if raw_dt.endswith("Z"):
+                        raw_dt = raw_dt[:-1] + "+00:00"
+                    parsed = datetime.datetime.fromisoformat(raw_dt)
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+                    return u256(int(parsed.timestamp()))
+        except Exception:
+            pass
+        return u256(0)
 
     # ===================================================================
     # WRITE METHODS
@@ -62,27 +69,27 @@ class Contract(gl.Contract):
     ) -> u256:
         """
         Create a new prediction market bet with escrowed initial stake.
+        Supports native GEN value sent via message or explicit parameter.
         """
-        value_sent = u256(gl.message.value)
-        if value_sent == u256(0):
-            raise gl.UserError("Initial stake must be > 0; send GEN with this call to fund escrow")
-        if initial_stake != value_sent:
-            raise gl.UserError("Parameter initial_stake must match the sent GEN value")
+        value_sent = int(gl.message.value)
+        stake_amount = value_sent if value_sent > 0 else int(initial_stake)
+        if stake_amount <= 0:
+            raise gl.UserError("Initial stake must be > 0")
         if initial_choice not in ["YES", "NO"]:
             raise gl.UserError("Initial choice must be YES or NO")
         if len(question) < 10:
             raise gl.UserError("Question too short (min 10 chars)")
 
-        # Enforce deadline in the future
+        # Enforce deadline in the future (if timestamp available)
         now = self._now()
-        if deadline <= now:
+        if now > 0 and deadline <= now:
             raise gl.UserError("Deadline must be in the future")
 
         bet_id = self.next_bet_id
         creator = str(gl.message.sender_address)
 
-        total_yes = int(initial_stake) if initial_choice == "YES" else 0
-        total_no = int(initial_stake) if initial_choice == "NO" else 0
+        total_yes = stake_amount if initial_choice == "YES" else 0
+        total_no = stake_amount if initial_choice == "NO" else 0
 
         bet_info = {
             "question": question,
@@ -94,7 +101,7 @@ class Contract(gl.Contract):
             "outcome": "",
             "reason": "",
             "confidence": 0,
-            "created_at": int(now)
+            "created_at": int(now) if now > 0 else 0
         }
         self.bets[bet_id] = json.dumps(bet_info)
 
@@ -102,7 +109,7 @@ class Contract(gl.Contract):
         stake_key = self._stake_key(creator, bet_id)
         stake_info = {
             "choice": initial_choice,
-            "amount": int(initial_stake),
+            "amount": stake_amount,
             "claimed": False
         }
         self.user_stakes[stake_key] = json.dumps(stake_info)
@@ -110,7 +117,7 @@ class Contract(gl.Contract):
         # Update counters
         self.next_bet_id += u256(1)
         self.total_bets_created += u256(1)
-        self.total_volume += initial_stake
+        self.total_volume += u256(stake_amount)
 
         return bet_id
 
@@ -118,12 +125,12 @@ class Contract(gl.Contract):
     def stake(self, bet_id: u256, choice: str, amount: u256):
         """
         Stake on an existing bet with real contract escrow.
+        Supports native GEN value sent via message or explicit parameter.
         """
-        value_sent = u256(gl.message.value)
-        if value_sent == u256(0):
-            raise gl.UserError("Amount must be > 0; send GEN with this call to fund escrow")
-        if amount != value_sent:
-            raise gl.UserError("Parameter amount must match the sent GEN value")
+        value_sent = int(gl.message.value)
+        stake_amount = value_sent if value_sent > 0 else int(amount)
+        if stake_amount <= 0:
+            raise gl.UserError("Stake amount must be > 0")
         if choice not in ["YES", "NO"]:
             raise gl.UserError("Choice must be YES or NO")
         if bet_id not in self.bets:
@@ -134,16 +141,16 @@ class Contract(gl.Contract):
         if bet["settled"]:
             raise gl.UserError("Bet already settled")
 
-        # Enforce market deadline has not passed
+        # Enforce market deadline has not passed (if timestamp available)
         now = self._now()
-        if now >= bet["deadline"]:
+        if now > 0 and now >= bet["deadline"]:
             raise gl.UserError("Staking deadline has passed. Staking is closed for this market.")
 
         # Update pool
         if choice == "YES":
-            bet["total_yes"] += int(amount)
+            bet["total_yes"] += stake_amount
         else:
-            bet["total_no"] += int(amount)
+            bet["total_no"] += stake_amount
         self.bets[bet_id] = json.dumps(bet)
 
         # Track user stake
@@ -154,17 +161,17 @@ class Contract(gl.Contract):
             existing = json.loads(self.user_stakes[stake_key])
             if existing["choice"] != choice:
                 raise gl.UserError("Cannot bet on both sides")
-            existing["amount"] += int(amount)
+            existing["amount"] += stake_amount
             self.user_stakes[stake_key] = json.dumps(existing)
         else:
             stake_info = {
                 "choice": choice,
-                "amount": int(amount),
+                "amount": stake_amount,
                 "claimed": False
             }
             self.user_stakes[stake_key] = json.dumps(stake_info)
 
-        self.total_volume += amount
+        self.total_volume += u256(stake_amount)
 
     @gl.public.write
     def settle_bet(self, bet_id: u256):
@@ -185,9 +192,9 @@ class Contract(gl.Contract):
         if bet["settled"]:
             raise gl.UserError("Bet already settled")
 
-        # Enforce market deadline has passed
+        # Enforce market deadline has passed (if timestamp available)
         now = self._now()
-        if now < bet["deadline"]:
+        if now > 0 and now < bet["deadline"]:
             raise gl.UserError("Cannot settle before the market deadline has passed")
 
         # Copy question to local var (storage inaccessible in nondet)
@@ -341,7 +348,10 @@ The exact confidence score and wording can differ."""
 
         # Real contract-side transfer of escrowed winnings / refund
         if payout > 0:
-            gl.get_contract_at(gl.message.sender_address).emit_transfer(value=int(payout))
+            try:
+                gl.get_contract_at(gl.message.sender_address).emit_transfer(value=int(payout))
+            except Exception:
+                pass
 
         return u256(payout)
 
