@@ -14,7 +14,7 @@ Traditional prediction markets (Polymarket, Augur) need manual oracles or commun
 - ❌ **Manipulable** — biased voters, oracle attacks
 
 **GenNews solves this with GenLayer's Intelligent Contracts:**
-- ✅ AI reads Reuters, Bloomberg, CoinDesk **automatically**
+- ✅ AI reads independent sources such as Reuters, Bloomberg, AP, BBC, and CNBC
 - ✅ Settles in **minutes** after deadline
 - ✅ No oracles, no votes — pure **AI consensus**
 
@@ -23,7 +23,7 @@ Traditional prediction markets (Polymarket, Augur) need manual oracles or commun
 **Ethereum/Solidity CANNOT:**
 - Read web content on-chain (`gl.nondet.web.render()`)
 - Make subjective AI decisions (`gl.nondet.exec_prompt()`)
-- Reach semantic consensus on ambiguous outcomes (`gl.eq_principle.prompt_comparative()`)
+- Reach consensus on independently evaluated outcomes (`gl.vm.run_nondet_unsafe()`)
 
 **GenLayer is the HEART, not a side feature.** Remove GenLayer and the entire settlement mechanism is impossible.
 
@@ -60,7 +60,7 @@ Traditional prediction markets (Polymarket, Augur) need manual oracles or commun
       ┌─────────────┼──────────────┐
       │             │              │
  ┌────▼────┐  ┌────▼─────┐  ┌────▼─────┐
- │ Reuters │  │Bloomberg │  │ CoinDesk │
+ │ Reuters │  │Bloomberg │  │ AP / BBC │
  │  News   │  │  News    │  │  News    │
  └─────────┘  └──────────┘  └──────────┘
 ```
@@ -82,7 +82,7 @@ Traditional prediction markets (Polymarket, Augur) need manual oracles or commun
 ### 3. After Deadline — AI Settlement
 - Anyone clicks **"Settle with AI"**
 - AI reads 5 news sources (takes 1-2 min):
-  - Reuters, Bloomberg, CoinDesk, Google News, CNBC
+  - Reuters, Bloomberg, AP News, BBC, CNBC
 - AI analyzes: "Has Bitcoin reached $150k?"
 - Multiple GenLayer validators reach consensus
 - **Result**: YES (Confidence: 8/10)
@@ -139,9 +139,9 @@ gennews-prediction-market/
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/[YOUR_USERNAME]/gennews-prediction-market.git
+git clone https://github.com/tranhop26/gennews-prediction-market.git
 cd gennews-prediction-market/frontend
-npm install
+npm ci
 ```
 
 ### 2. Deploy Contract on GenLayer Studio
@@ -151,7 +151,10 @@ npm install
 3. Hard refresh: `Ctrl+Shift+F5`
 4. Click "+" → paste contents of `contracts/BettingPool.py`
 5. Click **"Deploy"** → wait for `FINALIZED` + `SUCCESS`
-6. Copy contract address
+6. Copy the **new** contract address
+
+> The legacy deployment `0x79c3eeA98B9f2c70D05Cd19a7f978b756634Cdee`
+> predates the escrow fixes and must not be used by the frontend.
 
 ### 3. Configure Frontend
 
@@ -187,8 +190,8 @@ Then add env var `NEXT_PUBLIC_CONTRACT_ADDRESS` in Vercel dashboard → Settings
 
 | Method | Type | Description |
 |--------|------|-------------|
-| `create_bet(question, deadline, initial_stake, initial_choice)` | Write | Create new prediction market |
-| `stake(bet_id, choice, amount)` | Write | Stake tokens on YES or NO |
+| `create_bet(question, deadline, initial_stake, initial_choice)` | Payable write | Create a market; `initial_stake` must equal native GEN sent |
+| `stake(bet_id, choice, amount)` | Payable write | Stake native GEN; `amount` must equal transaction value |
 | `settle_bet(bet_id)` | Write | **🤖 AI reads news & determines outcome** |
 | `claim_winnings(bet_id)` | Write | Claim proportional winnings |
 | `get_bet(bet_id)` | View | Get bet details |
@@ -205,11 +208,8 @@ page = gl.nondet.web.render(url, mode='html')
 # Step 2: AI analyzes all evidence
 result = gl.nondet.exec_prompt(prompt, response_format='json')
 
-# Step 3: Validators reach consensus (NOT strict_eq!)
-outcome = gl.eq_principle.prompt_comparative(
-    evaluate,
-    principle='The outcome (YES/NO) must be the same'
-)
+# Step 3: every validator independently fetches evidence and evaluates outcome
+outcome = gl.vm.run_nondet_unsafe(evaluate, validate)
 ```
 
 ### Rules Followed
@@ -221,7 +221,7 @@ outcome = gl.eq_principle.prompt_comparative(
 - ✅ Class named `Contract` (Rule #6)
 - ✅ Nondet wrapped properly (Rule #7)
 - ✅ `from genlayer import *` (Rule R13)
-- ✅ `prompt_comparative` for consensus (NOT `strict_eq`)
+- ✅ Independent leader/validator evaluation using `run_nondet_unsafe`
 
 ### Edge Cases Handled
 - Empty question → `UserError`
@@ -230,51 +230,33 @@ outcome = gl.eq_principle.prompt_comparative(
 - Already settled → `UserError`
 - Double claim → `UserError`
 - Zero stake → `UserError`
-- No winning stake → `UserError`
-- URL fetch failure → graceful fallback in AI prompt
+- Missing transaction datetime → fail closed
+- Declared amount does not match native GEN sent → `UserError`
+- Fewer than two accessible sources → `UNRESOLVED`
 
 ### Key Refactorings & Enhancements
-- 🟢 **Real Contract-Side Escrow & Value Transfers**: `@gl.public.write.payable` functions (`create_bet` & `stake`) lock native GEN deposits into contract escrow. `claim_winnings` executes real value transfers via `gl.get_contract_at(sender).emit_transfer(value=payout)`. Frontend SDK passes `value: BigInt(amount)`.
+- 🟢 **Real Contract-Side Escrow & Value Transfers**: payable methods only credit `gl.message.value` and require it to exactly match the declared amount. Claims transfer native GEN to the caller through an EVM recipient interface.
 - 🟢 **Market Deadline Enforcement**: Strict deadline checks enforced in `create_bet`, `stake` (blocks late staking), and `settle_bet` (blocks early settlement).
 - 🟢 **Unresolved State Preservation**: If fewer than 2 reliable news sources can be rendered/accessed, outcome defaults to `UNRESOLVED`. Users claim 100% of their staked tokens back as an escrow refund.
+- 🟢 **Wallet-Signed Frontend**: browser writes use the connected wallet instead of an ephemeral generated private key. Decimal GEN values are converted to wei without floating point.
+- 🟢 **Finalized Receipt Checks**: the UI reports success only after the transaction is finalized and contract execution succeeds.
 
 ---
 
-## 🏆 Why This Scores 4-5 on All Axes
+## ✅ Verification Required Before Submission
 
-### GenLayer Fit (5/5)
-- ✅ AI is the **HEART** — not decoration
-- ✅ Uses `gl.nondet.web.render()` to fetch live news
-- ✅ Uses `gl.nondet.exec_prompt()` for AI analysis
-- ✅ Uses `gl.eq_principle.prompt_comparative()` for consensus
-- ✅ **Impossible on Ethereum** — Solidity can't read news or reason about events
+The project is ready to advertise as live only after all of these artifacts are
+updated:
 
-### Contract Quality (4-5/5)
-- ✅ Uses `prompt_comparative` (NOT `strict_eq`) for semantic consensus
-- ✅ Comprehensive edge-case handling (8+ error checks)
-- ✅ Clean code with docstrings and comments
-- ✅ Separation of concerns (storage, logic, AI)
+- New GenLayer contract address deployed from the current
+  `contracts/BettingPool.py`.
+- Transaction hashes proving Create → Stake → Settle → Claim.
+- A second test proving `UNRESOLVED` returns each user's exact stake.
+- Vercel URL running this GenNews frontend with the new address.
+- `npm test`, `npm run lint`, and `npm run build` all passing.
 
-### Engineering (4-5/5)
-- ✅ 10 meaningful commits with conventional commit messages
-- ✅ Clear directory structure (contracts/frontend/scripts)
-- ✅ Complete README with architecture + setup guide
-- ✅ `.gitignore`, `.env.example`, `DEPLOYMENT.md`
-
-### Frontend/UX (4-5/5)
-- ✅ Real `genlayer-js` integration (not mock)
-- ✅ Live deployment on Vercel
-- ✅ Full user flow: Create → Stake → Settle → Claim
-- ✅ Premium dark-mode UI with glassmorphism + animations
-- ✅ Loading states, error handling, responsive design
-
----
-
-## 🌐 Live Demo
-
-- **Contract**: `0x79c3eeA98B9f2c70D05Cd19a7f978b756634Cdee` on [GenLayer Studio](https://studio.genlayer.com)
-- **Frontend**: https://frontend-six-beige-93.vercel.app
-- **Video Demo**: [Coming soon — record with Loom]
+The old contract and Vercel URLs have intentionally been removed because they
+do not represent the current source.
 
 ---
 

@@ -7,6 +7,13 @@ import StakeForm from "@/components/StakeForm";
 import SettleButton from "@/components/SettleButton";
 import { getBet, claimWinnings } from "@/lib/contract";
 import type { Bet } from "@/lib/contract";
+import {
+  calculateOdds,
+  calculateRoiPercent,
+  estimatePayout,
+  formatGenAmount,
+  parseGenAmount,
+} from "@/lib/amounts";
 
 export default function BetDetailPage() {
   const params = useParams();
@@ -17,9 +24,14 @@ export default function BetDetailPage() {
   const [claiming, setClaiming] = useState(false);
   const [claimResult, setClaimResult] = useState("");
   const [claimError, setClaimError] = useState("");
+  const [simulatedStake, setSimulatedStake] = useState("1");
 
   const fetchBet = useCallback(async () => {
     try {
+      if (!Number.isInteger(betId) || betId <= 0) {
+        setBet(null);
+        return;
+      }
       const data = await getBet(betId);
       setBet(data);
     } catch (err) {
@@ -30,8 +42,31 @@ export default function BetDetailPage() {
   }, [betId]);
 
   useEffect(() => {
-    fetchBet();
-  }, [fetchBet]);
+    let active = true;
+    const request =
+      Number.isInteger(betId) && betId > 0
+        ? getBet(betId)
+        : Promise.resolve(null);
+
+    void request
+      .then((data) => {
+        if (active) {
+          setBet(data);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to fetch bet:", err);
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [betId]);
 
   const handleClaim = async () => {
     setClaiming(true);
@@ -39,8 +74,8 @@ export default function BetDetailPage() {
     setClaimResult("");
     try {
       await claimWinnings(betId);
-      setClaimResult("Successfully claimed your winnings!");
-      fetchBet();
+      setClaimResult("Claim finalized and payout transfer confirmed.");
+      await fetchBet();
     } catch (err) {
       setClaimError(err instanceof Error ? err.message : "Claim failed");
     } finally {
@@ -83,20 +118,37 @@ export default function BetDetailPage() {
     );
   }
 
-  const totalPool = bet.total_yes + bet.total_no;
-  const yesPercent = totalPool > 0 ? (bet.total_yes / totalPool) * 100 : 50;
-  const noPercent = totalPool > 0 ? (bet.total_no / totalPool) * 100 : 50;
+  const totalPool = BigInt(bet.total_yes) + BigInt(bet.total_no);
+  const { yes: yesPercent, no: noPercent } = calculateOdds(
+    bet.total_yes,
+    bet.total_no,
+  );
   const deadlineDate = new Date(bet.deadline * 1000);
   const now = new Date();
   const isExpired = deadlineDate < now;
-  const [simulatedStake, setSimulatedStake] = useState("100");
 
   const calcPayout = (choice: "YES" | "NO") => {
-    const amount = Number(simulatedStake) || 0;
-    if (amount <= 0) return 0;
-    const newTotalPool = totalPool + amount;
-    const newWinningPool = (choice === "YES" ? bet.total_yes : bet.total_no) + amount;
-    return newWinningPool > 0 ? Math.floor((amount * newTotalPool) / newWinningPool) : amount;
+    try {
+      return estimatePayout(
+        simulatedStake,
+        bet.total_yes,
+        bet.total_no,
+        choice,
+      );
+    } catch {
+      return 0n;
+    }
+  };
+
+  const calcRoi = (choice: "YES" | "NO") => {
+    try {
+      return calculateRoiPercent(
+        calcPayout(choice),
+        parseGenAmount(simulatedStake),
+      );
+    } catch {
+      return 0;
+    }
   };
 
   return (
@@ -173,7 +225,7 @@ export default function BetDetailPage() {
                       👍 YES
                     </span>
                     <span className="text-sm text-gray-300">
-                      {bet.total_yes.toLocaleString()} tokens ({yesPercent.toFixed(1)}%)
+                      {formatGenAmount(bet.total_yes)} GEN ({yesPercent.toFixed(1)}%)
                     </span>
                   </div>
                   <div className="progress-bar-container">
@@ -191,7 +243,7 @@ export default function BetDetailPage() {
                       👎 NO
                     </span>
                     <span className="text-sm text-gray-300">
-                      {bet.total_no.toLocaleString()} tokens ({noPercent.toFixed(1)}%)
+                      {formatGenAmount(bet.total_no)} GEN ({noPercent.toFixed(1)}%)
                     </span>
                   </div>
                   <div className="progress-bar-container">
@@ -206,7 +258,7 @@ export default function BetDetailPage() {
                 <div className="pt-3 border-t border-white/5 flex justify-between">
                   <span className="text-sm text-gray-400">Total Pool</span>
                   <span className="text-sm font-bold gradient-text-gold">
-                    {totalPool.toLocaleString()} tokens
+                    {formatGenAmount(totalPool)} GEN
                   </span>
                 </div>
               </div>
@@ -225,15 +277,16 @@ export default function BetDetailPage() {
                 <div className="space-y-4">
                   <label className="block">
                     <span className="text-xs font-medium text-gray-300 block mb-1">
-                      Simulated Stake (GEN tokens)
+                      Simulated Stake (GEN)
                     </span>
                     <input
                       type="number"
                       value={simulatedStake}
                       onChange={(e) => setSimulatedStake(e.target.value)}
                       className="input-glass !py-2 text-sm"
-                      placeholder="100"
-                      min="1"
+                      placeholder="1"
+                      min="0.000001"
+                      step="0.000001"
                     />
                   </label>
 
@@ -241,20 +294,20 @@ export default function BetDetailPage() {
                     <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-center">
                       <div className="text-xs text-emerald-400 font-semibold mb-1">If YES Wins</div>
                       <div className="text-lg font-bold text-white">
-                        {calcPayout("YES").toLocaleString()} GEN
+                        {formatGenAmount(calcPayout("YES"))} GEN
                       </div>
                       <div className="text-[10px] text-gray-400 mt-0.5">
-                        ROI: {Number(simulatedStake) > 0 ? (((calcPayout("YES") - Number(simulatedStake)) / Number(simulatedStake)) * 100).toFixed(0) : 0}%
+                        ROI: {calcRoi("YES").toFixed(2)}%
                       </div>
                     </div>
 
                     <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-center">
                       <div className="text-xs text-red-400 font-semibold mb-1">If NO Wins</div>
                       <div className="text-lg font-bold text-white">
-                        {calcPayout("NO").toLocaleString()} GEN
+                        {formatGenAmount(calcPayout("NO"))} GEN
                       </div>
                       <div className="text-[10px] text-gray-400 mt-0.5">
-                        ROI: {Number(simulatedStake) > 0 ? (((calcPayout("NO") - Number(simulatedStake)) / Number(simulatedStake)) * 100).toFixed(0) : 0}%
+                        ROI: {calcRoi("NO").toFixed(2)}%
                       </div>
                     </div>
                   </div>
@@ -280,7 +333,7 @@ export default function BetDetailPage() {
                 </div>
                 <p className="text-xs text-gray-500 mt-2">
                   This analysis was performed by GenLayer AI validators reading
-                  real news sources and reaching consensus.
+                  {` ${bet.source_count} independent news sources and reaching consensus.`}
                 </p>
               </div>
             )}
@@ -360,18 +413,18 @@ export default function BetDetailPage() {
           {/* ═══ RIGHT COLUMN: Actions ═══ */}
           <div className="space-y-6">
             {/* Stake Form (only if not settled) */}
-            {!bet.settled && (
+            {!bet.settled && !isExpired && (
               <div className="animate-fade-in" style={{ animationDelay: "0.15s" }}>
                 <StakeForm
                   betId={betId}
-                  disabled={bet.settled}
+                  disabled={bet.settled || isExpired}
                   onStakeComplete={fetchBet}
                 />
               </div>
             )}
 
             {/* Settle Button (only if expired and not settled) */}
-            {!bet.settled && (
+            {!bet.settled && isExpired && (
               <div className="animate-fade-in" style={{ animationDelay: "0.25s" }}>
                 <SettleButton
                   betId={betId}
@@ -389,7 +442,7 @@ export default function BetDetailPage() {
               <ul className="space-y-2 text-xs text-gray-400">
                 <li className="flex items-start gap-2">
                   <span className="text-purple-400 mt-0.5">1.</span>
-                  Stake tokens on YES or NO
+                  Stake native GEN on YES or NO
                 </li>
                 <li className="flex items-start gap-2">
                   <span className="text-purple-400 mt-0.5">2.</span>

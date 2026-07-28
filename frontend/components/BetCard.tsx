@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import type { Bet } from "@/lib/contract";
+import { calculateOdds, formatGenAmount } from "@/lib/amounts";
 
 interface BetCardProps {
   bet: Bet;
@@ -9,9 +10,11 @@ interface BetCardProps {
 }
 
 export default function BetCard({ bet, index = 0 }: BetCardProps) {
-  const totalPool = bet.total_yes + bet.total_no;
-  const yesPercent = totalPool > 0 ? (bet.total_yes / totalPool) * 100 : 50;
-  const noPercent = totalPool > 0 ? (bet.total_no / totalPool) * 100 : 50;
+  const totalPool = BigInt(bet.total_yes) + BigInt(bet.total_no);
+  const { yes: yesPercent, no: noPercent } = calculateOdds(
+    bet.total_yes,
+    bet.total_no,
+  );
 
   const deadlineDate = new Date(bet.deadline * 1000);
   const now = new Date();
@@ -67,7 +70,7 @@ export default function BetCard({ bet, index = 0 }: BetCardProps) {
           <div className="flex items-center gap-1">
             <span>💰</span>
             <span className="font-medium text-gray-300">
-              {totalPool.toLocaleString()} tokens
+              {formatGenAmount(totalPool)} GEN
             </span>
           </div>
           <div className="flex items-center gap-1">

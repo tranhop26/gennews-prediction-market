@@ -1,220 +1,241 @@
-import { createClient, createAccount } from "genlayer-js";
+import { createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
-import { TransactionStatus } from "genlayer-js/types";
+import {
+  ExecutionResult,
+  TransactionStatus,
+  type TransactionHash,
+} from "genlayer-js/types";
+import { parseGenAmount } from "@/lib/amounts";
 
-// ─── Types (match contract return types) ─────────────────────────────────────
-
-/** A single prediction market bet */
 export interface Bet {
   bet_id: number;
   question: string;
   deadline: number;
   creator: string;
-  total_yes: number;
-  total_no: number;
+  total_yes: string;
+  total_no: string;
   settled: boolean;
   outcome: string;
   reason: string;
   confidence: number;
+  source_count: number;
   created_at: number;
 }
 
-/** Global platform statistics */
 export interface Stats {
   total_bets: number;
-  total_volume: number;
+  total_volume: string;
+  total_paid_out: string;
+  contract_balance: string;
   next_bet_id: number;
 }
 
-/** A user's stake info for a specific bet */
 export interface UserStake {
   choice: string;
-  amount: number;
+  amount: string;
   claimed: boolean;
 }
 
-// ─── Contract Address ────────────────────────────────────────────────────────
+type ClientOptions = NonNullable<Parameters<typeof createClient>[0]>;
+type WalletProvider = NonNullable<ClientOptions["provider"]>;
 
-export const CONTRACT_ADDRESS: `0x${string}` =
-  (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ||
-    "0x0000000000000000000000000000000000000000") as `0x${string}`;
+declare global {
+  interface Window {
+    ethereum?: WalletProvider;
+  }
+}
 
-// ─── Clients & Account ──────────────────────────────────────────────────────
+const configuredAddress = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ?? "";
+const DEPRECATED_CONTRACT_ADDRESS =
+  "0x79c3eea98b9f2c70d05cd19a7f978b756634cdee";
 
-/** Read-only client — no account required */
+export const CONTRACT_ADDRESS = configuredAddress as `0x${string}`;
+
 export const readClient = createClient({
   chain: studionet,
 });
 
-/** Account used for write operations */
-export const account = createAccount();
+function requireContractAddress(): `0x${string}` {
+  if (
+    !/^0x[a-fA-F0-9]{40}$/.test(CONTRACT_ADDRESS) ||
+    CONTRACT_ADDRESS === "0x0000000000000000000000000000000000000000" ||
+    CONTRACT_ADDRESS.toLowerCase() === DEPRECATED_CONTRACT_ADDRESS
+  ) {
+    throw new Error(
+      "NEXT_PUBLIC_CONTRACT_ADDRESS is missing, invalid, or points to the deprecated contract. Deploy the fixed contract and configure its new address.",
+    );
+  }
+  return CONTRACT_ADDRESS;
+}
 
-/** Write client — signs transactions with the generated account */
-export const writeClient = createClient({
-  chain: studionet,
-  account,
-});
+async function getWalletClient() {
+  if (typeof window === "undefined" || !window.ethereum) {
+    throw new Error("Install or enable an EVM wallet such as MetaMask");
+  }
 
-// ─── Read Helpers ────────────────────────────────────────────────────────────
+  const requested = await window.ethereum.request({
+    method: "eth_requestAccounts",
+  });
+  if (!Array.isArray(requested) || typeof requested[0] !== "string") {
+    throw new Error("The wallet did not return an account");
+  }
 
-/** Fetch every bet on the platform (returns full bet objects) */
-export async function getAllBets(): Promise<Bet[]> {
-  try {
-    const raw = await readClient.readContract({
-      address: CONTRACT_ADDRESS,
-      functionName: "get_all_bets",
-      args: [],
-    });
-    // Contract returns list of dicts directly
-    const data = typeof raw === "string" ? JSON.parse(raw) : raw;
-    return Array.isArray(data) ? data : [];
-  } catch (error) {
-    console.error("[getAllBets] Failed:", error);
-    return [];
+  const address = requested[0] as `0x${string}`;
+  const client = createClient({
+    chain: studionet,
+    account: address,
+    provider: window.ethereum,
+  });
+  await client.connect("studionet");
+  return { address, client };
+}
+
+async function waitForSuccess(
+  hash: TransactionHash,
+  retries = 120,
+): Promise<void> {
+  const receipt = await readClient.waitForTransactionReceipt({
+    hash,
+    status: TransactionStatus.FINALIZED,
+    interval: 5_000,
+    retries,
+  });
+
+  if (
+    receipt.txExecutionResultName !== ExecutionResult.FINISHED_WITH_RETURN
+  ) {
+    throw new Error(
+      `Transaction ${hash} finalized but contract execution failed`,
+    );
   }
 }
 
-/** Fetch a single bet by ID */
+export async function connectWallet(): Promise<string> {
+  const { address } = await getWalletClient();
+  return address;
+}
+
+export async function getAllBets(): Promise<Bet[]> {
+  const raw = await readClient.readContract({
+    address: requireContractAddress(),
+    functionName: "get_all_bets",
+    args: [],
+  });
+  const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+  if (!Array.isArray(data)) {
+    throw new Error("Contract returned an invalid market list");
+  }
+  return data as Bet[];
+}
+
 export async function getBet(id: number): Promise<Bet | null> {
-  try {
-    const raw = await readClient.readContract({
-      address: CONTRACT_ADDRESS,
-      functionName: "get_bet",
-      args: [id],
-    });
-    const data = typeof raw === "string" ? JSON.parse(raw) : raw;
-    return data as Bet;
-  } catch (error) {
-    console.error(`[getBet] Failed for #${id}:`, error);
+  const raw = await readClient.readContract({
+    address: requireContractAddress(),
+    functionName: "get_bet",
+    args: [id],
+  });
+  const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+  if (
+    !data ||
+    typeof data !== "object" ||
+    "error" in data
+  ) {
     return null;
   }
+  return data as Bet;
 }
 
-/** Fetch aggregate platform statistics */
 export async function getStats(): Promise<Stats> {
-  try {
-    const raw = await readClient.readContract({
-      address: CONTRACT_ADDRESS,
-      functionName: "get_stats",
-      args: [],
-    });
-    const data = typeof raw === "string" ? JSON.parse(raw) : raw;
-    return data as Stats;
-  } catch (error) {
-    console.error("[getStats] Failed:", error);
-    return { total_bets: 0, total_volume: 0, next_bet_id: 1 };
-  }
+  const raw = await readClient.readContract({
+    address: requireContractAddress(),
+    functionName: "get_stats",
+    args: [],
+  });
+  const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+  return data as Stats;
 }
 
-/** Fetch a user's stake for a specific bet */
 export async function getUserStake(
   userAddress: string,
-  betId: number
+  betId: number,
 ): Promise<UserStake> {
-  try {
-    const raw = await readClient.readContract({
-      address: CONTRACT_ADDRESS,
-      functionName: "get_user_stake",
-      args: [userAddress, betId],
-    });
-    const data = typeof raw === "string" ? JSON.parse(raw) : raw;
-    return data as UserStake;
-  } catch (error) {
-    console.error(`[getUserStake] Failed for bet #${betId}:`, error);
-    return { choice: "", amount: 0, claimed: false };
-  }
+  const raw = await readClient.readContract({
+    address: requireContractAddress(),
+    functionName: "get_user_stake",
+    args: [userAddress, betId],
+  });
+  const data = typeof raw === "string" ? JSON.parse(raw) : raw;
+  return data as UserStake;
 }
 
-// ─── Write Helpers ───────────────────────────────────────────────────────────
-
-/** Create a new prediction market bet */
 export async function createBet(
   question: string,
   deadline: number,
-  initialStake: number,
-  initialChoice: string
+  initialStakeGen: string,
+  initialChoice: string,
 ): Promise<string> {
-  const hash = await writeClient.writeContract({
-    address: CONTRACT_ADDRESS,
+  const stakeWei = parseGenAmount(initialStakeGen);
+  const { client } = await getWalletClient();
+  const hash = await client.writeContract({
+    address: requireContractAddress(),
     functionName: "create_bet",
-    args: [question, deadline, initialStake, initialChoice],
-    value: BigInt(initialStake),
+    args: [question, deadline, stakeWei, initialChoice],
+    value: stakeWei,
   });
-  await writeClient.waitForTransactionReceipt({
-    hash,
-    status: TransactionStatus.ACCEPTED,
-  });
+  await waitForSuccess(hash);
   return hash;
 }
 
-/** Stake on an existing bet */
 export async function stakeBet(
   betId: number,
   choice: string,
-  amount: number
+  amountGen: string,
 ): Promise<string> {
-  const hash = await writeClient.writeContract({
-    address: CONTRACT_ADDRESS,
+  const amountWei = parseGenAmount(amountGen);
+  const { client } = await getWalletClient();
+  const hash = await client.writeContract({
+    address: requireContractAddress(),
     functionName: "stake",
-    args: [betId, choice, amount],
-    value: BigInt(amount),
+    args: [betId, choice, amountWei],
+    value: amountWei,
   });
-  await writeClient.waitForTransactionReceipt({
-    hash,
-    status: TransactionStatus.ACCEPTED,
-  });
+  await waitForSuccess(hash);
   return hash;
 }
 
-/** Settle a bet — triggers AI news analysis on-chain */
 export async function settleBet(betId: number): Promise<string> {
-  const hash = await writeClient.writeContract({
-    address: CONTRACT_ADDRESS,
+  const { client } = await getWalletClient();
+  const hash = await client.writeContract({
+    address: requireContractAddress(),
     functionName: "settle_bet",
     args: [betId],
-    value: BigInt(0),
+    value: 0n,
   });
-  await writeClient.waitForTransactionReceipt({
-    hash,
-    status: TransactionStatus.ACCEPTED,
-  });
+  await waitForSuccess(hash, 240);
   return hash;
 }
 
-/** Claim winnings from a settled bet */
 export async function claimWinnings(betId: number): Promise<string> {
-  const hash = await writeClient.writeContract({
-    address: CONTRACT_ADDRESS,
+  const { client } = await getWalletClient();
+  const hash = await client.writeContract({
+    address: requireContractAddress(),
     functionName: "claim_winnings",
     args: [betId],
-    value: BigInt(0),
+    value: 0n,
   });
-  await writeClient.waitForTransactionReceipt({
-    hash,
-    status: TransactionStatus.ACCEPTED,
-  });
+  await waitForSuccess(hash);
+
+  const triggered = await readClient.getTriggeredTransactionIds(hash);
+  for (const childHash of triggered) {
+    await waitForSuccess(childHash);
+  }
   return hash;
 }
 
-// ─── Utility Functions ───────────────────────────────────────────────────────
-
-/** Format unix timestamp to readable date */
 export function formatDeadline(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleDateString("en-US", {
     year: "numeric",
     month: "long",
     day: "numeric",
   });
-}
-
-/** Calculate YES/NO odds as percentages */
-export function calculateOdds(
-  totalYes: number,
-  totalNo: number
-): { yes: string; no: string } {
-  const total = totalYes + totalNo;
-  if (total === 0) return { yes: "50%", no: "50%" };
-  const yesPercent = ((totalYes / total) * 100).toFixed(1);
-  const noPercent = ((totalNo / total) * 100).toFixed(1);
-  return { yes: `${yesPercent}%`, no: `${noPercent}%` };
 }

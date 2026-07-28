@@ -5,11 +5,13 @@ import Link from "next/link";
 import BetCard from "@/components/BetCard";
 import type { Bet, Stats } from "@/lib/contract";
 import { getAllBets, getStats } from "@/lib/contract";
+import { formatGenAmount } from "@/lib/amounts";
 
 export default function HomePage() {
   const [bets, setBets] = useState<Bet[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"ALL" | "ACTIVE" | "EXPIRED" | "SETTLED" | "UNRESOLVED">("ALL");
 
@@ -24,6 +26,9 @@ export default function HomePage() {
         setStats(statsData);
       } catch (err) {
         console.error("Failed to fetch data:", err);
+        setLoadError(
+          err instanceof Error ? err.message : "Failed to load contract data",
+        );
       } finally {
         setLoading(false);
       }
@@ -79,7 +84,7 @@ export default function HomePage() {
             <span className="text-purple-300 font-semibold">
               GenLayer&apos;s AI validators
             </span>{" "}
-            read Reuters, Bloomberg &amp; CoinDesk to deliver decentralized consensus.
+            read Reuters, Bloomberg, AP, BBC &amp; CNBC to deliver decentralized consensus.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
@@ -104,7 +109,7 @@ export default function HomePage() {
               {
                 icon: "🌐",
                 title: "Live Web Access",
-                desc: "gl.nondet.web.render() fetches real-time news articles from Reuters, Bloomberg & CoinDesk on-chain.",
+                desc: "gl.nondet.web.render() fetches independent news evidence from Reuters, Bloomberg, AP, BBC & CNBC on-chain.",
               },
               {
                 icon: "🧠",
@@ -114,7 +119,7 @@ export default function HomePage() {
               {
                 icon: "⚖️",
                 title: "Validator Consensus",
-                desc: "prompt_comparative() requires multiple validator nodes to reach semantic agreement before settlement.",
+                desc: "Each validator independently fetches evidence and must reach the same YES, NO, or UNRESOLVED outcome.",
               },
             ].map((item, i) => (
               <div
@@ -143,7 +148,7 @@ export default function HomePage() {
               {
                 label: "Total Volume",
                 value: stats
-                  ? `${stats.total_volume.toLocaleString()} GEN`
+                  ? `${formatGenAmount(stats.total_volume)} GEN`
                   : "—",
                 icon: "💰",
               },
@@ -177,6 +182,11 @@ export default function HomePage() {
       {/* ═══════════════════ MARKETS SECTION ═══════════════════ */}
       <section id="markets" className="px-4 py-12 pb-24 sm:px-6 lg:px-8">
         <div className="mx-auto max-w-6xl">
+          {loadError && (
+            <div className="mb-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">
+              Contract connection failed: {loadError}
+            </div>
+          )}
           {/* Header & Controls */}
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
             <div>

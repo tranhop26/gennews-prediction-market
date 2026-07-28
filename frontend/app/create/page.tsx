@@ -4,12 +4,13 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createBet } from "@/lib/contract";
+import { parseGenAmount } from "@/lib/amounts";
 
 export default function CreateBetPage() {
   const router = useRouter();
   const [question, setQuestion] = useState("");
   const [deadline, setDeadline] = useState("");
-  const [initialStake, setInitialStake] = useState("1000");
+  const [initialStake, setInitialStake] = useState("1");
   const [initialChoice, setInitialChoice] = useState<"YES" | "NO">("YES");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -39,15 +40,21 @@ export default function CreateBetPage() {
       return;
     }
 
-    const stake = parseInt(initialStake);
-    if (!stake || stake <= 0) {
-      setError("Initial stake must be greater than 0");
+    try {
+      parseGenAmount(initialStake);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Invalid initial stake");
       return;
     }
 
     setLoading(true);
     try {
-      await createBet(question.trim(), deadlineTimestamp, stake, initialChoice);
+      await createBet(
+        question.trim(),
+        deadlineTimestamp,
+        initialStake,
+        initialChoice,
+      );
       router.push("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create bet");
@@ -100,7 +107,7 @@ export default function CreateBetPage() {
 
             <div className="p-3 rounded-lg bg-blue-500/5 border border-blue-500/20 text-xs text-blue-300/80">
               💡 <strong>Tip:</strong> Write a clear YES/NO question. The AI
-              will search news sources like Reuters, Bloomberg, and CoinDesk to
+              will search sources such as Reuters, Bloomberg, AP, BBC, and CNBC to
               determine the answer.
             </div>
           </div>
@@ -159,14 +166,15 @@ export default function CreateBetPage() {
 
             <label className="block">
               <span className="text-sm text-gray-400 mb-1.5 block">
-                Initial Stake (tokens)
+                Initial Stake (GEN)
               </span>
               <input
                 type="number"
                 value={initialStake}
                 onChange={(e) => setInitialStake(e.target.value)}
-                placeholder="1000"
-                min="1"
+                placeholder="1"
+                min="0.000001"
+                step="0.000001"
                 className="input-glass"
                 disabled={loading}
               />
@@ -174,7 +182,7 @@ export default function CreateBetPage() {
 
             {/* Quick Amounts */}
             <div className="flex gap-2">
-              {[500, 1000, 2500, 5000, 10000].map((val) => (
+              {["0.1", "0.5", "1", "5", "10"].map((val) => (
                 <button
                   key={val}
                   type="button"
@@ -184,7 +192,7 @@ export default function CreateBetPage() {
                              hover:bg-purple-500/10 hover:text-purple-300 border border-white/5
                              hover:border-purple-500/20 transition-all"
                 >
-                  {val >= 1000 ? `${val / 1000}k` : val}
+                  {val} GEN
                 </button>
               ))}
             </div>
@@ -198,7 +206,7 @@ export default function CreateBetPage() {
             <div className="space-y-2">
               {[
                 "After deadline, anyone calls settle_bet()",
-                "AI reads news from Reuters, Bloomberg, CoinDesk...",
+                "AI reads independent news sources",
                 "AI analyzes: has the event occurred?",
                 "Multiple GenLayer validators reach consensus",
                 "Winners claim proportional share of the total pool",

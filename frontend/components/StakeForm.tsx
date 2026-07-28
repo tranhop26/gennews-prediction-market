@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { stakeBet } from "@/lib/contract";
+import { parseGenAmount } from "@/lib/amounts";
 
 interface StakeFormProps {
   betId: number;
@@ -25,9 +26,10 @@ export default function StakeForm({
       setError("Please select YES or NO");
       return;
     }
-    const numAmount = parseInt(amount);
-    if (!numAmount || numAmount <= 0) {
-      setError("Please enter a valid amount");
+    try {
+      parseGenAmount(amount);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Please enter a valid amount");
       return;
     }
 
@@ -36,8 +38,8 @@ export default function StakeForm({
     setSuccess("");
 
     try {
-      await stakeBet(betId, choice, numAmount);
-      setSuccess(`Successfully staked ${numAmount} on ${choice}!`);
+      await stakeBet(betId, choice, amount);
+      setSuccess(`Successfully staked ${amount} GEN on ${choice}!`);
       setAmount("");
       setChoice(null);
       onStakeComplete?.();
@@ -83,7 +85,7 @@ export default function StakeForm({
       {/* Amount Input */}
       <div>
         <label className="block text-sm text-gray-400 mb-1.5">
-          Stake Amount (tokens)
+          Stake Amount (GEN)
         </label>
         <input
           type="number"
@@ -91,14 +93,15 @@ export default function StakeForm({
           onChange={(e) => { setAmount(e.target.value); setError(""); }}
           placeholder="Enter amount..."
           disabled={disabled || loading}
-          min="1"
+          min="0.000001"
+          step="0.000001"
           className="input-glass disabled:opacity-40"
         />
       </div>
 
       {/* Quick Amount Buttons */}
       <div className="flex gap-2">
-        {[100, 500, 1000, 5000].map((val) => (
+        {["0.1", "0.5", "1", "5"].map((val) => (
           <button
             key={val}
             onClick={() => setAmount(String(val))}
@@ -107,7 +110,7 @@ export default function StakeForm({
                        hover:bg-purple-500/10 hover:text-purple-300 border border-white/5 
                        hover:border-purple-500/20 transition-all disabled:opacity-40"
           >
-            {val >= 1000 ? `${val / 1000}k` : val}
+            {val} GEN
           </button>
         ))}
       </div>

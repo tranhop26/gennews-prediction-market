@@ -57,7 +57,7 @@ export default function SettleButton({
               <strong>How it works:</strong>
             </p>
             <ol className="list-decimal list-inside space-y-0.5 text-purple-300/80">
-              <li>AI fetches news from Reuters, Bloomberg, CoinDesk...</li>
+              <li>AI fetches evidence from independent news sources</li>
               <li>AI analyzes whether the event has occurred</li>
               <li>Multiple validators reach consensus</li>
               <li>Outcome is recorded on-chain</li>
